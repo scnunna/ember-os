@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Watch Case Print Sheet</title>
+<style>
+  :root { --ink:#1a1a1a; --muted:#555; --line:#ccc; --warn:#b3261e; --bg:#fff; --tint:#f4f4f4; }
+  @page { size: Letter; margin: 14mm; }
+  * { box-sizing: border-box; }
+  body { background:var(--bg); color:var(--ink); font: 10pt/1.32 "Segoe UI", Arial, sans-serif; margin:0 auto; max-width:780px; padding:16px; }
+  h1 { font-size:18pt; margin:0 0 2px; }
+  .sub { color:var(--muted); margin:0 0 14px; }
+  h2 { font-size:11pt; margin:10px 0 4px; border-bottom:2px solid var(--ink); padding-bottom:2px; }
+  table { width:100%; border-collapse:collapse; }
+  td, th { border:1px solid var(--line); padding:3px 7px; text-align:left; vertical-align:top; }
+  th { background:var(--tint); width:34%; font-weight:600; }
+  .must { color:var(--warn); font-weight:700; }
+  .box { border:2px solid var(--warn); padding:8px 10px; margin:10px 0; }
+  ul { margin:4px 0; padding-left:20px; }
+  .fill { display:inline-block; min-width:110px; border-bottom:1px solid var(--ink); }
+  small { color:var(--muted); }
+</style>
+</head>
+<body>
+<h1>3D Print Job — Smartwatch Back Case</h1>
+<p class="sub">Waveshare ESP32-S3 AMOLED 2.06 · 900mAh case by bjwest9738 (MakerWorld #2763002, CC BY-NC-SA, personal use)</p>
+
+<h2>Files on the USB stick</h2>
+<table>
+  <tr><th>Main file</th><td><b>STL</b> (as downloaded from MakerWorld)</td></tr>
+  <tr><th>Also included</th><td>Designer's <b>3MF</b>. PrusaSlicer 2.7+ can open it. Use it to copy the designer's <b>orientation</b>.</td></tr>
+  <tr><th>Parts</th><td>1 × back case &nbsp;+&nbsp; buttons (<b>please print 3 sets</b>, they're tiny and easy to lose)</td></tr>
+</table>
+
+<h2>Slicer settings (PrusaSlicer)</h2>
+<table>
+  <tr><th>Material</th><td><b>PETG</b> if available, otherwise <b>PLA</b>. Black or dark grey.<br><small>PETG handles heat better: the board reaches ~46 °C when charging with Wi-Fi on.</small></td></tr>
+  <tr><th>Layer height</th><td>0.20 mm</td></tr>
+  <tr><th>Perimeters (walls)</th><td>4</td></tr>
+  <tr><th>Infill</th><td>15 %</td></tr>
+  <tr><th>Perimeter generator</th><td class="must">ARACHNE — required. Some walls are too thin for "Classic" and won't print.</td></tr>
+  <tr><th>Orientation</th><td>Upside down, as the designer printed it (match the 3MF). Gives the cleanest outside surface.</td></tr>
+  <tr><th>Supports</th><td><b>Organic / tree</b> supports. Make sure supports don't fill the button holes or screw holes.</td></tr>
+  <tr><th>Brim</th><td>Optional. Only if the first layer looks weak.</td></tr>
+  <tr><th>Scale</th><td class="must">100 % — do not scale. It must fit real hardware.</td></tr>
+</table>
+
+<div class="box">
+  <b>Time check:</b> if the slicer estimate is over ~1 h 45 min, please put it on the <b>long-print printer</b> (normal slots are 2 h incl. setup).<br>
+  <b>Estimate:</b> ~19 g + supports ≈ 25 g → about <b>$3.75</b> at $0.15/g.
+</div>
+
+<h2>Quick checks before I leave</h2>
+<ul>
+  <li>Screw holes, button holes, USB-C and SD-card slots are clear (no support or strings inside)</li>
+  <li>Case sits flat, doesn't rock on the table</li>
+  <li>All button sets collected</li>
+</ul>
+
+
+<p>Slicer estimate: <span class="fill">&nbsp;</span> &nbsp; Grams: <span class="fill">&nbsp;</span> &nbsp; Material used: <span class="fill">&nbsp;</span></p>
+
+</body>
+</html>

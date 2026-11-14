@@ -1,0 +1,14 @@
+# flash dumps: vendor firmware, may hold per-device keys -> never published
+Backup_*/
+*.bin
+# third-party vendor package (re-downloadable from Waveshare)
+vendor_waveshare/
+# build output + downloaded IDF components (restored by idf.py from dependencies.lock)
+firmware/build/
+firmware/managed_components/
+sdkconfig.pre-ember.bak
+firmware/sdkconfig.old
+# test logs
+firmware/tools/*_last.log
+__pycache__/
+*.pyc

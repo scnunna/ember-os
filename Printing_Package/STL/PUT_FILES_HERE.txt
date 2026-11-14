@@ -1,0 +1,2 @@
+Put the MakerWorld STL + 3MF here (download needs a free MakerWorld login).
+Then ask Claude to measure them before printing.

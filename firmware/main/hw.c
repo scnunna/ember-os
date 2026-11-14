@@ -1,0 +1,403 @@
+// Hardware layer: power chip, RTC, IMU + step counter, storage, audio, prefs.
+#include "esp_attr.h"
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
+#include "nvs_flash.h"
+#include "nvs.h"
+#include "driver/i2c_master.h"
+#include "esp_vfs_fat.h"
+#include "wear_levelling.h"
+#include "bsp/esp-bsp.h"
+#include "esp_codec_dev.h"
+#include "hw.h"
+
+static const char *TAG = "hw";
+
+// ---------------------------------------------------------------- I2C helpers
+static i2c_master_dev_handle_t s_axp, s_rtc, s_imu;
+
+static i2c_master_dev_handle_t dev_add(uint8_t addr)
+{
+    i2c_device_config_t cfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = addr, .scl_speed_hz = 400000};
+    i2c_master_dev_handle_t h = NULL;
+    if (i2c_master_bus_add_device(bsp_i2c_get_handle(), &cfg, &h) != ESP_OK) ESP_LOGE(TAG, "add dev 0x%02X failed", addr);
+    return h;
+}
+static esp_err_t rr(i2c_master_dev_handle_t h, uint8_t reg, uint8_t *out, size_t n)
+{
+    if (!h) return ESP_FAIL;
+    return i2c_master_transmit_receive(h, &reg, 1, out, n, 100);
+}
+static esp_err_t wr(i2c_master_dev_handle_t h, uint8_t reg, const uint8_t *d, size_t n)
+{
+    if (!h || n > 16) return ESP_FAIL;
+    uint8_t buf[17];
+    buf[0] = reg;
+    memcpy(buf + 1, d, n);
+    return i2c_master_transmit(h, buf, n + 1, 100);
+}
+static void wr1(i2c_master_dev_handle_t h, uint8_t reg, uint8_t v) { wr(h, reg, &v, 1); }
+
+// ---------------------------------------------------------------- prefs
+static nvs_handle_t s_nvs;
+int hw_pref_get(const char *key, int def)
+{
+    int32_t v;
+    return nvs_get_i32(s_nvs, key, &v) == ESP_OK ? (int)v : def;
+}
+void hw_pref_set(const char *key, int val)
+{
+    nvs_set_i32(s_nvs, key, val);
+    nvs_commit(s_nvs);
+}
+
+// ---------------------------------------------------------------- power
+void hw_batt(batt_t *b)
+{
+    uint8_t s1 = 0, s2 = 0, pct = 0, v[2] = {0};
+    rr(s_axp, 0x00, &s1, 1);
+    rr(s_axp, 0x01, &s2, 1);
+    rr(s_axp, 0xA4, &pct, 1);
+    rr(s_axp, 0x34, v, 2);
+    b->vbus = (s1 >> 5) & 1;
+    b->present = (s1 >> 3) & 1;
+    b->charging = ((s2 >> 5) & 3) == 1;
+    b->mv = ((v[0] & 0x3F) << 8) | v[1];
+    b->pct = pct > 100 ? 100 : pct;
+    if (!b->present) { b->pct = 0; b->mv = 0; }
+}
+
+static void pmu_init(void)
+{
+    s_axp = dev_add(0x34);
+    uint8_t r;
+    if (rr(s_axp, 0x30, &r, 1) == ESP_OK) wr1(s_axp, 0x30, r | 0x01);   // VBAT ADC on
+    if (rr(s_axp, 0x18, &r, 1) == ESP_OK) wr1(s_axp, 0x18, r | 0x08);   // fuel gauge on
+    if (rr(s_axp, 0x68, &r, 1) == ESP_OK) wr1(s_axp, 0x68, r | 0x01);   // battery detect on
+}
+
+// ---------------------------------------------------------------- RTC (PCF85063A)
+static uint8_t bcd2(uint8_t b) { return (b >> 4) * 10 + (b & 0x0F); }
+static uint8_t tobcd(int v) { return ((v / 10) << 4) | (v % 10); }
+
+bool hw_rtc_valid(void)
+{
+    uint8_t s;
+    return rr(s_rtc, 0x04, &s, 1) == ESP_OK && !(s & 0x80);
+}
+bool hw_rtc_get(struct tm *t)
+{
+    uint8_t d[7];
+    if (rr(s_rtc, 0x04, d, 7) != ESP_OK || (d[0] & 0x80)) return false;
+    memset(t, 0, sizeof(*t));
+    t->tm_sec = bcd2(d[0] & 0x7F);
+    t->tm_min = bcd2(d[1] & 0x7F);
+    t->tm_hour = bcd2(d[2] & 0x3F);
+    t->tm_mday = bcd2(d[3] & 0x3F);
+    t->tm_wday = d[4] & 7;
+    t->tm_mon = bcd2(d[5] & 0x1F) - 1;
+    t->tm_year = bcd2(d[6]) + 100;
+    return true;
+}
+void hw_rtc_set(const struct tm *t)
+{
+    uint8_t d[7] = {tobcd(t->tm_sec), tobcd(t->tm_min), tobcd(t->tm_hour), tobcd(t->tm_mday),
+                    (uint8_t)(t->tm_wday & 7), tobcd(t->tm_mon + 1), tobcd(t->tm_year % 100)};
+    wr(s_rtc, 0x04, d, 7);
+}
+static void rtc_init(void)
+{
+    s_rtc = dev_add(0x51);
+    if (!hw_rtc_valid()) {
+        // Never set: use firmware build time so the watch starts roughly right.
+        static const char *mn = "JanFebMarAprMayJunJulAugSepOctNovDec";
+        char m[4] = {0};
+        int d, y, hh, mm, ss;
+        sscanf(__DATE__, "%3s %d %d", m, &d, &y);
+        sscanf(__TIME__, "%d:%d:%d", &hh, &mm, &ss);
+        struct tm t = {0};
+        t.tm_mon = (int)((strstr(mn, m) - mn) / 3);
+        t.tm_mday = d; t.tm_year = y - 1900; t.tm_hour = hh; t.tm_min = mm; t.tm_sec = ss;
+        time_t e = mktime(&t);
+        gmtime_r(&e, &t);   // fills tm_wday
+        hw_rtc_set(&t);
+        ESP_LOGW(TAG, "RTC was unset; seeded from build time");
+    }
+}
+
+// ---------------------------------------------------------------- IMU + steps
+static bool s_imu_ok;
+static volatile float s_gx, s_gy, s_gz;
+static volatile uint32_t s_steps;
+static struct { uint32_t date; uint32_t d[7]; } s_hist;  // d[0] = today
+static uint32_t s_saved_steps;
+
+static volatile uint32_t s_still_ms;
+bool hw_imu_ok(void) { return s_imu_ok; }
+uint32_t hw_imu_still_ms(void) { return s_imu_ok ? s_still_ms : 0; }
+
+// QMI8658 wake-on-motion (datasheet "WoM" via CTRL9 command 0x08). INT1 idles low and toggles high on motion.
+bool hw_imu_wom_arm(void)
+{
+    if (!s_imu_ok) return false;
+    wr1(s_imu, 0x08, 0x00);             // CTRL7: all sensors off while configuring
+    wr1(s_imu, 0x03, 0x1E);             // CTRL2: accel +-4g, low-power 11 Hz ODR
+    wr1(s_imu, 0x0B, 120);              // CAL1_L: threshold 120 mg
+    wr1(s_imu, 0x0C, 0x80 | 0x02);      // CAL1_H: route to INT1, initial level 0, blank 2 samples
+    wr1(s_imu, 0x0A, 0x08);             // CTRL9: CTRL_CMD_WRITE_WOM_SETTING
+    uint8_t st = 0;
+    for (int i = 0; i < 50 && !(st & 0x80); i++) { vTaskDelay(pdMS_TO_TICKS(2)); rr(s_imu, 0x2D, &st, 1); }
+    wr1(s_imu, 0x0A, 0x00);             // CTRL9 ack
+    wr1(s_imu, 0x02, 0x40 | 0x08);      // CTRL1: auto-increment + INT1 output enable
+    wr1(s_imu, 0x08, 0x01);             // CTRL7: accel on
+    uint8_t s1; rr(s_imu, 0x2F, &s1, 1); // STATUS1 read clears a stale event
+    ESP_LOGI(TAG, "WoM armed (cmd done=%d)", (st & 0x80) != 0);
+    return (st & 0x80) != 0;
+}
+void hw_imu_get_g(float *x, float *y, float *z) { *x = s_gx; *y = s_gy; *z = s_gz; }
+
+static uint32_t today_key(void)
+{
+    struct tm t;
+    if (!hw_rtc_get(&t)) return 0;
+    return (t.tm_year + 1900) * 10000 + (t.tm_mon + 1) * 100 + t.tm_mday;
+}
+static int days_between(uint32_t a, uint32_t b)  // yyyymmdd a -> b
+{
+    struct tm ta = {0}, tb = {0};
+    ta.tm_year = a / 10000 - 1900; ta.tm_mon = (a / 100) % 100 - 1; ta.tm_mday = a % 100; ta.tm_hour = 12;
+    tb.tm_year = b / 10000 - 1900; tb.tm_mon = (b / 100) % 100 - 1; tb.tm_mday = b % 100; tb.tm_hour = 12;
+    return (int)((mktime(&tb) - mktime(&ta)) / 86400);
+}
+uint32_t hw_steps_today(void) { return s_steps; }
+void hw_steps_history(uint32_t out[7])
+{
+    s_hist.d[0] = s_steps;
+    memcpy(out, s_hist.d, sizeof(s_hist.d));
+}
+void hw_steps_save(void)
+{
+    s_hist.d[0] = s_steps;
+    nvs_set_blob(s_nvs, "steps", &s_hist, sizeof(s_hist));
+    nvs_commit(s_nvs);
+    s_saved_steps = s_steps;
+}
+static void steps_rollover_check(void)
+{
+    uint32_t k = today_key();
+    if (!k) return;
+    if (s_hist.date == 0) { s_hist.date = k; return; }
+    if (k != s_hist.date) {
+        int n = days_between(s_hist.date, k);
+        if (n < 0) { s_hist.date = k; return; }     // clock went backwards: just re-anchor
+        s_hist.d[0] = s_steps;
+        for (int i = 0; i < n && i < 7; i++) { memmove(&s_hist.d[1], &s_hist.d[0], 6 * sizeof(uint32_t)); s_hist.d[0] = 0; }
+        s_hist.date = k;
+        s_steps = 0;
+        hw_steps_save();
+    }
+}
+
+static void imu_task(void *arg)
+{
+    // Software pedometer: the chip's hardware pedometer is reported unusable on this board revision.
+    float mean = 1.0f, lp = 0, prev = 0, prev2 = 0;
+    int64_t last_peak = 0;
+    int cand = 0;
+    int64_t last_house = 0;
+    const float THR = 0.10f;
+    // Power: 50 Hz only while the wrist moves. After 10 s of stillness poll at 4 Hz (each poll = one light-sleep
+    // wake-up instead of 50); any change > 0.06 g snaps back to 50 Hz. A step cluster needs 4 peaks, so nothing is lost.
+    float sx = 0, sy = 0, sz = 0;
+    int64_t still_since = esp_timer_get_time() / 1000;
+    while (1) {
+        int64_t t = esp_timer_get_time() / 1000;
+        bool slow = (t - still_since) > 10000;
+        vTaskDelay(pdMS_TO_TICKS(slow ? 250 : 20));
+        uint8_t d[6];
+        if (rr(s_imu, 0x35, d, 6) != ESP_OK) continue;
+        int16_t ax = (int16_t)(d[1] << 8 | d[0]), ay = (int16_t)(d[3] << 8 | d[2]), az = (int16_t)(d[5] << 8 | d[4]);
+        float gx = ax / 8192.0f, gy = ay / 8192.0f, gz = az / 8192.0f;   // +-4g
+        s_gx = gx; s_gy = gy; s_gz = gz;
+        if (fabsf(gx - sx) + fabsf(gy - sy) + fabsf(gz - sz) > 0.06f) { still_since = esp_timer_get_time() / 1000; sx = gx; sy = gy; sz = gz; }
+        s_still_ms = (uint32_t)(esp_timer_get_time() / 1000 - still_since);
+        if (slow) continue;                              // filter state only advances at its design rate (50 Hz)
+        float mag = sqrtf(gx * gx + gy * gy + gz * gz);
+        mean += 0.02f * (mag - mean);
+        lp += 0.35f * ((mag - mean) - lp);
+        int64_t now = esp_timer_get_time() / 1000;
+        if (prev > prev2 && prev >= lp && prev > THR) {
+            int64_t dt = now - last_peak;
+            if (dt > 250) {
+                if (dt < 2000) {
+                    cand++;
+                    if (cand == 4) s_steps += 4;
+                    else if (cand > 4) s_steps++;
+                } else cand = 1;
+                last_peak = now;
+            }
+        }
+        prev2 = prev; prev = lp;
+        if (now - last_house > 30000) {
+            last_house = now;
+            steps_rollover_check();
+            if (s_steps != s_saved_steps) hw_steps_save();
+        }
+    }
+}
+
+static void imu_init(void)
+{
+    s_imu = dev_add(0x6B);
+    uint8_t who = 0;
+    if (rr(s_imu, 0x00, &who, 1) != ESP_OK || who != 0x05) { ESP_LOGE(TAG, "QMI8658 not found"); return; }
+    wr1(s_imu, 0x02, 0x40);     // CTRL1: address auto-increment
+    wr1(s_imu, 0x03, 0x17);     // CTRL2: accel +-4g, 62.5 Hz
+    wr1(s_imu, 0x08, 0x01);     // CTRL7: accel on
+    s_imu_ok = true;
+
+    size_t sz = sizeof(s_hist);
+    if (nvs_get_blob(s_nvs, "steps", &s_hist, &sz) != ESP_OK) memset(&s_hist, 0, sizeof(s_hist));
+    s_steps = s_hist.d[0];
+    s_saved_steps = s_steps;
+    steps_rollover_check();
+    xTaskCreate(imu_task, "imu", 4096, NULL, 3, NULL);
+}
+
+// ---------------------------------------------------------------- storage
+static bool s_sd;
+static wl_handle_t s_wl = WL_INVALID_HANDLE;
+static bool s_flash_mounted;
+
+static void mount_flash(void)
+{
+    if (s_flash_mounted) return;
+    esp_vfs_fat_mount_config_t cfg = {.format_if_mount_failed = true, .max_files = 4, .allocation_unit_size = 16 * 1024};
+    if (esp_vfs_fat_spiflash_mount_rw_wl("/flash", "storage", &cfg, &s_wl) == ESP_OK) s_flash_mounted = true;
+    else ESP_LOGE(TAG, "flash FAT mount failed");
+}
+void hw_storage_remount(void)
+{
+    mount_flash();                 // always: apps, settings logs and the power log live here
+    if (s_sd) return;
+    s_sd = (bsp_sdcard_mount() == ESP_OK);
+}
+const char *hw_storage_root(void) { return s_sd ? BSP_SD_MOUNT_POINT : "/flash"; }
+bool hw_storage_is_sd(void) { return s_sd; }
+void hw_storage_info(uint64_t *total, uint64_t *free_bytes)
+{
+    *total = 0; *free_bytes = 0;
+    esp_vfs_fat_info(hw_storage_root(), total, free_bytes);
+}
+
+// ---------------------------------------------------------------- audio
+static esp_codec_dev_handle_t s_mic, s_spk;
+static bool s_mic_open, s_spk_open;
+static uint32_t s_mic_rate;
+
+bool hw_mic_open(uint32_t rate, float gain_db)
+{
+    if (s_mic_open) return false;          // mic is single-owner
+    if (!s_mic) return false;              // set up once at boot (hw_audio_preinit); never lazily: see there
+    esp_codec_dev_sample_info_t fs = {.bits_per_sample = 16, .channel = 2, .channel_mask = 0, .sample_rate = rate};
+    if (esp_codec_dev_open(s_mic, &fs) != ESP_CODEC_DEV_OK) return false;
+    esp_codec_dev_set_in_gain(s_mic, gain_db);
+    s_mic_open = true;
+    s_mic_rate = rate;
+    return true;
+}
+int hw_mic_read_mono(int16_t *out, int frames)
+{
+    EXT_RAM_BSS_ATTR static int16_t tmp[1024 * 2];
+    if (!s_mic_open) return 0;
+    if (frames > 1024) frames = 1024;
+    if (esp_codec_dev_read(s_mic, tmp, frames * 4) != ESP_CODEC_DEV_OK) return 0;
+    for (int i = 0; i < frames; i++) out[i] = (int16_t)(((int)tmp[2 * i] + (int)tmp[2 * i + 1]) / 2);
+    return frames;
+}
+void hw_mic_close(void)
+{
+    if (!s_mic_open) return;
+    esp_codec_dev_close(s_mic);
+    s_mic_open = false;
+}
+bool hw_spk_open(uint32_t rate, int vol)
+{
+    if (s_spk_open) return true;
+    if (s_mic_open && s_mic_rate != rate) return false;
+    if (!s_spk) return false;              // set up once at boot (hw_audio_preinit)
+    esp_codec_dev_sample_info_t fs = {.bits_per_sample = 16, .channel = 1, .channel_mask = 0, .sample_rate = rate};
+    if (esp_codec_dev_open(s_spk, &fs) != ESP_CODEC_DEV_OK) return false;
+    esp_codec_dev_set_out_vol(s_spk, vol);
+    s_spk_open = true;
+    return true;
+}
+void hw_spk_write(const int16_t *mono, int frames)
+{
+    if (s_spk_open) esp_codec_dev_write(s_spk, (void *)mono, frames * 2);
+}
+void hw_spk_close(void)
+{
+    if (!s_spk_open) return;
+    esp_codec_dev_close(s_spk);
+    s_spk_open = false;
+}
+void hw_beep(int hz, int ms, int vol)
+{
+    const int rate = 16000;
+    if (s_mic_open && s_mic_rate != rate) return;   // would retune the shared I2S clock mid-recording
+    if (!hw_spk_open(rate, vol)) return;
+    int n = rate * ms / 1000;
+    EXT_RAM_BSS_ATTR static int16_t buf[1600];
+    for (int off = 0; off < n; off += 1600) {
+        int c = n - off > 1600 ? 1600 : n - off;
+        for (int i = 0; i < c; i++) {
+            float env = 1.0f;
+            int g = off + i;
+            if (g < 80) env = g / 80.0f;
+            if (n - g < 160) env = (n - g) / 160.0f;
+            buf[i] = (int16_t)(sinf(2 * 3.14159265f * hz * g / rate) * 14000 * env);
+        }
+        hw_spk_write(buf, c);
+    }
+    memset(buf, 0, sizeof(buf));
+    hw_spk_write(buf, 800);
+    hw_spk_close();
+}
+
+// The Waveshare BSP sets up I2S the first time a codec is requested and ABORTS the whole watch (ESP_ERROR_CHECK) if
+// its DMA buffers can't be allocated. Doing that lazily (first beep/recording) crashed every sound-making app once
+// Bluetooth + display had used the internal DMA memory. So: claim it here, at boot, while memory is plentiful.
+static void hw_audio_preinit(void)
+{
+    size_t before = heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    s_spk = bsp_audio_codec_speaker_init();
+    s_mic = bsp_audio_codec_microphone_init();
+    // Codec setup leaves the I2S channels running (wastes power, blocks light sleep); one open/close parks them.
+    esp_codec_dev_sample_info_t o = {.bits_per_sample = 16, .channel = 1, .sample_rate = 16000};
+    if (s_spk && esp_codec_dev_open(s_spk, &o) == ESP_CODEC_DEV_OK) esp_codec_dev_close(s_spk);
+    esp_codec_dev_sample_info_t i = {.bits_per_sample = 16, .channel = 2, .sample_rate = 16000};
+    if (s_mic && esp_codec_dev_open(s_mic, &i) == ESP_CODEC_DEV_OK) esp_codec_dev_close(s_mic);
+    ESP_LOGI(TAG, "audio ready: speaker=%d mic=%d (used %u B DMA RAM)", s_spk != NULL, s_mic != NULL,
+             (unsigned)(before - heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)));
+}
+
+// ---------------------------------------------------------------- init
+void hw_init(void)
+{
+    esp_err_t e = nvs_flash_init();
+    if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) { nvs_flash_erase(); nvs_flash_init(); }
+    nvs_open("watch", NVS_READWRITE, &s_nvs);
+    pmu_init();
+    rtc_init();
+    imu_init();
+    hw_audio_preinit();
+    hw_storage_remount();
+    ESP_LOGI(TAG, "hw ready: imu=%d sd=%d", s_imu_ok, s_sd);
+}

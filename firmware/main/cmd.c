@@ -1,0 +1,380 @@
+// USB serial command shell for development / end-to-end tests (no effect unless the PC sends a command).
+//   settime Y M D h m s   set the RTC (the flash scripts do this automatically)
+//   layout                open every screen and report overlapping / off-screen widgets
+//   nav N                 random navigation stress test (N steps)
+//   status                clock, battery, heap
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "esp_random.h"
+#include "driver/usb_serial_jtag.h"
+#include "bsp/esp-bsp.h"
+#include "app.h"
+#include "hw.h"
+
+static bool inter(const lv_area_t *a, const lv_area_t *b)
+{
+    return a->x1 <= b->x2 && b->x1 <= a->x2 && a->y1 <= b->y2 && b->y1 <= a->y2;
+}
+static bool contains(const lv_area_t *o, const lv_area_t *i)
+{
+    return o->x1 <= i->x1 && o->y1 <= i->y1 && o->x2 >= i->x2 && o->y2 >= i->y2;
+}
+static const char *desc(lv_obj_t *o, char *b, size_t n)
+{
+    const char *t = "";
+    if (lv_obj_check_type(o, &lv_label_class)) t = lv_label_get_text(o);
+    else if (lv_obj_get_child_count(o) && lv_obj_check_type(lv_obj_get_child(o, 0), &lv_label_class)) t = lv_label_get_text(lv_obj_get_child(o, 0));
+    snprintf(b, n, "\"%.24s\"", t);
+    return b;
+}
+
+// Returns the number of problems found on the active screen. Must hold the LVGL lock.
+static int check_screen(const char *name)
+{
+    lv_obj_t *scr = lv_screen_active();
+    lv_obj_update_layout(scr);
+    int bad = 0;
+    uint32_t n = lv_obj_get_child_count(scr);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *a = lv_obj_get_child(scr, i);
+        if (lv_obj_has_flag(a, LV_OBJ_FLAG_HIDDEN)) continue;
+        lv_area_t A; lv_obj_get_coords(a, &A);
+        char da[40];
+        if (lv_area_get_width(&A) <= 0 || lv_area_get_height(&A) <= 0) continue;     // empty label
+        if (A.x1 < 0 || A.y1 < 0 || A.x2 > 409 || A.y2 > 501) {
+            printf("LAYOUT %s: OFFSCREEN %s x=%d..%d y=%d..%d\n", name, desc(a, da, sizeof(da)), (int)A.x1, (int)A.x2, (int)A.y1, (int)A.y2);
+            bad++;
+        }
+        for (uint32_t j = i + 1; j < n; j++) {
+            lv_obj_t *b = lv_obj_get_child(scr, j);
+            if (lv_obj_has_flag(b, LV_OBJ_FLAG_HIDDEN)) continue;
+            lv_area_t B; lv_obj_get_coords(b, &B);
+            if (lv_area_get_width(&B) <= 0 || lv_area_get_height(&B) <= 0) continue;
+            if (inter(&A, &B) && !contains(&A, &B) && !contains(&B, &A)) {
+                char db[40];
+                printf("LAYOUT %s: OVERLAP %s [%d,%d..%d,%d]  with  %s [%d,%d..%d,%d]\n", name, desc(a, da, sizeof(da)), (int)A.x1, (int)A.y1, (int)A.x2, (int)A.y2,
+                       desc(b, db, sizeof(db)), (int)B.x1, (int)B.y1, (int)B.x2, (int)B.y2);
+                bad++;
+            }
+        }
+    }
+    return bad;
+}
+
+static void cmd_layout(void)
+{
+    int total = 0;
+    printf("LAYOUT start\n");
+    bsp_display_lock(0); printf("LAYOUT got lock\n"); launcher_wake(); launcher_face(); bsp_display_unlock();
+    printf("LAYOUT face loaded\n");
+    vTaskDelay(pdMS_TO_TICKS(600));
+    bsp_display_lock(0); total += check_screen("face"); launcher_home(); bsp_display_unlock();
+    vTaskDelay(pdMS_TO_TICKS(600));
+    bsp_display_lock(0); total += check_screen("grid"); bsp_display_unlock();
+    for (int i = 0; i < APP_COUNT; i++) {
+        printf("LAYOUT open %s\n", APPS[i].name);
+        bsp_display_lock(0); launcher_open(i); bsp_display_unlock();
+        vTaskDelay(pdMS_TO_TICKS(700));
+        bsp_display_lock(0); total += check_screen(APPS[i].name); launcher_home(); bsp_display_unlock();
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    printf("LAYOUT DONE problems=%d\n", total);
+}
+
+static void cmd_nav(int steps)
+{
+    size_t heap0 = esp_get_free_heap_size(), ps0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    for (int i = 0; i < steps; i++) {
+        bsp_display_lock(0);
+        launcher_wake();
+        switch (esp_random() % 5) {
+        case 0: launcher_home(); break;
+        case 1: launcher_face(); break;
+        case 2: launcher_back(); break;
+        default: launcher_open(esp_random() % APP_COUNT); break;   // ignored unless on the grid
+        }
+        bsp_display_unlock();
+        vTaskDelay(pdMS_TO_TICKS(20 + esp_random() % 260));
+    }
+    vTaskDelay(pdMS_TO_TICKS(800));
+    printf("NAV DONE steps=%d heap %u->%u psram %u->%u\n", steps, (unsigned)heap0, (unsigned)esp_get_free_heap_size(), (unsigned)ps0,
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+
+// ---- synthetic touch: goes through the real LVGL input pipeline (read_cb -> press/release/gesture/click) ----
+// The touch driver runs the indev in event mode (reads only on touch interrupts), so each fake sample must trigger a read.
+static void feed(bool active, bool pressed, int x, int y)
+{
+    launcher_synth(active, pressed, x, y);
+    lv_indev_t *in = bsp_display_get_input_dev();
+    if (!bsp_display_lock(2000)) { printf("TOUCH step lvgl lock timeout in feed\n"); return; }
+    if (in) lv_indev_read(in);
+    bsp_display_unlock();
+}
+static void finger(int x1, int y1, int x2, int y2, int steps)
+{
+    printf("TOUCH step finger (%d,%d)->(%d,%d)\n", x1, y1, x2, y2);
+    feed(true, true, x1, y1);
+    vTaskDelay(pdMS_TO_TICKS(70));
+    for (int i = 1; i <= steps; i++) {
+        feed(true, true, x1 + (x2 - x1) * i / steps, y1 + (y2 - y1) * i / steps);
+        if (i < steps) vTaskDelay(pdMS_TO_TICKS(30));          // release right after the last move, like a real flick
+    }
+    feed(true, false, x2, y2);
+    vTaskDelay(pdMS_TO_TICKS(120));
+    feed(false, false, 0, 0);
+    vTaskDelay(pdMS_TO_TICKS(700));
+}
+static void tap(int x, int y) { finger(x, y, x, y, 1); }
+
+static int rtc_minutes(void)
+{
+    struct tm t;
+    return hw_rtc_get(&t) ? t.tm_hour * 60 + t.tm_min : -1;
+}
+static void wait_safe_second(void)      // avoid a natural minute rollover in the middle of a clock test
+{
+    struct tm t;
+    while (hw_rtc_get(&t) && (t.tm_sec < 3 || t.tm_sec > 40)) vTaskDelay(pdMS_TO_TICKS(500));
+}
+
+static int s_pass, s_fail;
+static void check(bool ok, const char *what)
+{
+    unsigned gn, sw, sr, sp; int gd;
+    launcher_gesture_dbg(&gn, &gd, &sw);
+    launcher_syn_stats(&sr, &sp);
+    printf("TOUCH %s: %s   [ui state=%d shown=%d anims=%u app=%d screen_on=%d dim=%d touch_errs=%u gestures=%u lastdir=%d swallowed=%u max_read_ms=%u syn_reads=%u syn_pressed=%u]\n", ok ? "PASS" : "FAIL", what, launcher_state(), launcher_active_screen(), (unsigned)lv_anim_count_running(),
+           launcher_cur(), launcher_screen_on(), launcher_dim(), touch_read_errors(), gn, gd, sw, touch_read_max_ms(), sr, sp);
+    if (ok) s_pass++; else s_fail++;
+}
+static void go_face(void) { bsp_display_lock(0); launcher_wake(); launcher_face(); bsp_display_unlock(); vTaskDelay(pdMS_TO_TICKS(600)); }
+
+static void cmd_touch(void)
+{
+    s_pass = s_fail = 0;
+    go_face();
+    finger(205, 440, 205, 150, 3);                                  // swipe up
+    check(launcher_state() == 1, "swipe up on watch face opens the app grid");
+    tap(335, 376);                                                  // Settings icon (3rd column, 3rd row)
+    check(launcher_state() == 2 && launcher_cur() == 8, "tap on Settings icon opens Settings");
+
+    wait_safe_second();
+    int m0 = rtc_minutes();
+    finger(140, 443, 180, 443, 4);                                  // 40 px drag that starts and ends INSIDE '-1m' (under LVGL's 50 px swipe threshold)
+    int m1 = rtc_minutes();
+    check(m0 >= 0 && m1 == m0, "swipe across '-1m' button does NOT change the clock");
+    if (launcher_state() == 2) finger(60, 120, 300, 120, 3);        // a 55 px swipe is too short to navigate: leave via a proper swipe
+    check(launcher_state() == 1, "swipe right leaves the app");
+
+    tap(335, 376);
+    wait_safe_second();
+    m0 = rtc_minutes();
+    tap(251, 443);                                                  // '+1m'
+    m1 = rtc_minutes();
+    printf("TOUCH info: clock before=%d after=%d (state=%d app=%d)\n", m0, m1, launcher_state(), launcher_cur());
+    check(m1 == m0 + 1, "real tap on '+1m' adds exactly one minute");
+    tap(160, 443);                                                  // '-1m' to restore
+    check(rtc_minutes() == m0, "real tap on '-1m' restores it");
+    finger(60, 120, 300, 120, 3);                                   // swipe right = back
+    check(launcher_state() == 1, "swipe right inside an app returns to the grid");
+
+    // dark-screen tap must only wake the screen
+    tap(335, 376);                                                  // open Settings again
+    wait_safe_second();
+    m0 = rtc_minutes();
+    bsp_display_lock(0); launcher_btn_long(); bsp_display_unlock();  // screen off
+    vTaskDelay(pdMS_TO_TICKS(500));
+    check(!launcher_screen_on(), "screen is off");
+    tap(251, 443);                                                  // blind tap where '+1m' is
+    m1 = rtc_minutes();
+    check(launcher_screen_on() && m1 == m0, "tap on a dark screen wakes it but does NOT press the button underneath");
+    tap(251, 443);
+    check(rtc_minutes() == m0 + 1, "the next tap works normally");
+    tap(160, 443);                                                  // restore clock
+    check(rtc_minutes() == m0, "clock restored");
+    go_face();
+    printf("TOUCH DONE pass=%d fail=%d\n", s_pass, s_fail);
+}
+
+// ---- whole-app exercise: tap every button on the current app screen through the real LVGL input pipeline ----
+typedef struct { int x, y; char txt[24]; } btn_spot_t;
+static int collect_buttons(lv_obj_t *o, btn_spot_t *out, int n, int max)
+{
+    uint32_t cnt = lv_obj_get_child_count(o);
+    for (uint32_t i = 0; i < cnt && n < max; i++) {
+        lv_obj_t *c = lv_obj_get_child(o, i);
+        if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) continue;
+        if (lv_obj_check_type(c, &lv_button_class)) {
+            lv_area_t a; lv_obj_get_coords(c, &a);
+            out[n].x = (a.x1 + a.x2) / 2; out[n].y = (a.y1 + a.y2) / 2;
+            out[n].txt[0] = 0;
+            if (lv_obj_get_child_count(c) && lv_obj_check_type(lv_obj_get_child(c, 0), &lv_label_class))
+                snprintf(out[n].txt, sizeof(out[n].txt), "%s", lv_label_get_text(lv_obj_get_child(c, 0)));
+            if (out[n].x >= 0 && out[n].x < 410 && out[n].y >= 0 && out[n].y < 502) n++;
+        } else n = collect_buttons(c, out, n, max);
+    }
+    return n;
+}
+static void cmd_labels(void)
+{
+    bsp_display_lock(0);
+    lv_obj_t *scr = lv_screen_active();
+    printf("CMD labels:");
+    uint32_t cnt = lv_obj_get_child_count(scr);
+    for (uint32_t i = 0; i < cnt; i++) {
+        lv_obj_t *c = lv_obj_get_child(scr, i);
+        if (lv_obj_check_type(c, &lv_label_class) && !lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) printf(" [%s]", lv_label_get_text(c));
+    }
+    printf("\n");
+    bsp_display_unlock();
+}
+static void cmd_tapall(int times)
+{
+    static btn_spot_t b[24];
+    bsp_display_lock(0);
+    launcher_wake();
+    int app = launcher_cur();
+    int n = collect_buttons(lv_screen_active(), b, 0, 24);
+    bsp_display_unlock();
+    for (int i = 0; i < n; i++) {
+        for (int k = 0; k < times; k++) {
+            bsp_display_lock(0); launcher_wake(); bsp_display_unlock();
+            if (launcher_state() != 2 || launcher_cur() != app) { printf("TAPALL left the app after a tap, stopping\n"); goto done; }
+            printf("TAPALL tap %d/%d [%s] at %d,%d\n", i + 1, n, b[i].txt, b[i].x, b[i].y);
+            tap(b[i].x, b[i].y);
+            vTaskDelay(pdMS_TO_TICKS(600));
+        }
+    }
+done:
+    printf("CMD tapall done buttons=%d state=%d app=%d dma_free=%u\n", n, launcher_state(), launcher_cur(),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+}
+
+// Ember app management:  app put NAME | app hex HEX... | app end | app ls | app rm NAME | app run NAME
+static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : ((c | 32) >= 'a' && (c | 32) <= 'f') ? (c | 32) - 'a' + 10 : -1; }
+static void cmd_app(const char *a)
+{
+    char nm[32];
+    if (sscanf(a, "put %31s", nm) == 1) printf("CMD app put %s\n", script_put_begin(nm) ? "ok" : "FAIL (name: a-z 0-9 _ -, max 20)");
+    else if (!strncmp(a, "hex ", 4)) {
+        uint8_t buf[320]; size_t n = 0;
+        for (const char *p = a + 4; p[0] && p[1] && n < sizeof(buf); p += 2) {
+            int h = hexv(p[0]), lo = hexv(p[1]);
+            if (h < 0 || lo < 0) { printf("CMD app hex BAD\n"); return; }
+            buf[n++] = (uint8_t)(h << 4 | lo);
+        }
+        printf("CMD app hex %s %u\n", script_put_data(buf, n) ? "ok" : "FAIL", (unsigned)n);
+    } else if (!strncmp(a, "end", 3)) printf("CMD app end %s\n", script_put_end() ? "ok" : "FAIL");
+    else if (!strncmp(a, "ls", 2)) {
+        printf("CMD app ls %d:", script_count());
+        for (int i = 0; i < script_count(); i++) printf(" %s", script_name(i));
+        printf("\n");
+    } else if (sscanf(a, "rm %31s", nm) == 1) printf("CMD app rm %s\n", script_remove(nm) ? "ok" : "FAIL");
+    else if (sscanf(a, "run %31s", nm) == 1) {
+        bsp_display_lock(0); launcher_open_script(nm); bsp_display_unlock();
+        printf("CMD app run state=%d cur=%d\n", launcher_state(), launcher_cur());
+    } else printf("CMD app ?\n");
+}
+
+static void run_line(char *l)
+{
+    int Y, M, D, h, m, s, n;
+    if (sscanf(l, "settime %d %d %d %d %d %d", &Y, &M, &D, &h, &m, &s) == 6) {
+        struct tm t = {0};
+        t.tm_year = Y - 1900; t.tm_mon = M - 1; t.tm_mday = D; t.tm_hour = h; t.tm_min = m; t.tm_sec = s;
+        time_t e = mktime(&t);
+        gmtime_r(&e, &t);
+        hw_rtc_set(&t);
+        printf("CMD time set %04d-%02d-%02d %02d:%02d:%02d\n", Y, M, D, h, m, s);
+    } else if (sscanf(l, "open %d", &n) == 1) {                     // open app n, wait, go back to the grid
+        bsp_display_lock(0); launcher_wake(); launcher_home(); bsp_display_unlock();
+        vTaskDelay(pdMS_TO_TICKS(500));
+        bsp_display_lock(0); launcher_open(n); bsp_display_unlock();
+        vTaskDelay(pdMS_TO_TICKS(2500));
+        bsp_display_lock(0); launcher_home(); bsp_display_unlock();
+        vTaskDelay(pdMS_TO_TICKS(500));
+        printf("CMD open %d done\n", n);
+    } else if (!strncmp(l, "layout", 6)) cmd_layout();
+    else if (!strncmp(l, "touch", 5)) cmd_touch();
+    else if (sscanf(l, "nav %d", &n) == 1) cmd_nav(n);
+    else if (!strncmp(l, "diag", 4)) {
+        bool lock_ok = bsp_display_lock(500);
+        if (lock_ok) bsp_display_unlock();
+        TaskHandle_t lv = xTaskGetHandle("taskLVGL");
+        if (!lv) lv = xTaskGetHandle("LVGL task");
+        unsigned tr, tp;
+        launcher_touch_stats(&tr, &tp);
+        printf("CMD diag lvgl_lock=%s lvgl_task=%s lvgl_stack_free=%u heap_integrity=%s touch_read_errors=%u real_touch_reads=%u real_touch_presses=%u\n",
+               lock_ok ? "ok" : "BLOCKED", lv ? "found" : "missing", lv ? (unsigned)uxTaskGetStackHighWaterMark(lv) : 0,
+               heap_caps_check_integrity_all(true) ? "ok" : "CORRUPT", touch_read_errors(), tr, tp);
+    } else if (!strncmp(l, "status", 6)) {
+        struct tm t; batt_t b; hw_batt(&b);
+        bool ok = hw_rtc_get(&t);
+        printf("CMD status rtc=%s %04d-%02d-%02d %02d:%02d:%02d steps=%lu batt=%d%% vbus=%d dma_free=%u dma_largest=%u psram=%u\n", ok ? "ok" : "unset", t.tm_year + 1900,
+               t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, (unsigned long)hw_steps_today(), b.pct, b.vbus,
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    } else if (sscanf(l, "tapall %d", &n) == 1) cmd_tapall(n);
+    else if (!strncmp(l, "labels", 6)) cmd_labels();
+    else if (sscanf(l, "tap %d %d", &h, &m) == 2) { tap(h, m); printf("CMD tap done state=%d app=%d\n", launcher_state(), launcher_cur()); }
+    else if (sscanf(l, "launch %d", &n) == 1) {                  // open app n and STAY in it (built-ins 0..8, scripts after)
+        bsp_display_lock(0); launcher_wake(); launcher_home(); bsp_display_unlock();
+        vTaskDelay(pdMS_TO_TICKS(400));
+        bsp_display_lock(0); launcher_open(n); bsp_display_unlock();
+        vTaskDelay(pdMS_TO_TICKS(800));
+        printf("CMD launch state=%d app=%d\n", launcher_state(), launcher_cur());
+    } else if (!strncmp(l, "mem", 3)) {
+        printf("CMD mem internal_free=%u dma_free=%u dma_largest=%u psram_free=%u\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    } else if (!strncmp(l, "beep", 4)) {
+        bool ok = hw_spk_open(16000, 40);
+        if (ok) hw_spk_close();
+        hw_beep(1200, 60, 40);
+        printf("CMD beep speaker=%s\n", ok ? "ok" : "FAIL");
+    } else if (sscanf(l, "rec %d", &n) == 1) {
+        bool ok = rec_start(REC_MEETING);
+        if (ok) { vTaskDelay(pdMS_TO_TICKS(n * 1000)); rec_stop(); }
+        printf("CMD rec start=%s file=%s\n", ok ? "ok" : "FAIL", ok ? rec_last_file() : "-");
+    } else if (!strncmp(l, "app ", 4)) cmd_app(l + 4);
+    else if (!strncmp(l, "pwr", 3)) {
+        power_stats_t p; power_stats(&p); batt_t b; hw_batt(&b);
+        printf("CMD pwr screen=%s active_s=%lld doze_s=%lld wakes=%lu deep_sleeps=%lu sleep_allowed=%d still_ms=%lu batt_present=%d pct=%d mv=%d usb=%d charging=%d wake_cause=%d\n",
+               p.screen_on ? "on" : "off", p.ms_active / 1000, p.ms_doze / 1000, (unsigned long)p.wakes, (unsigned long)p.deep_count, p.sleep_allowed,
+               (unsigned long)hw_imu_still_ms(), b.present, b.pct, b.mv, b.vbus, b.charging, power_wake_cause());
+    } else if (sscanf(l, "deepsleep %d", &n) == 1) {
+        printf("CMD deepsleep %d s (USB drops and comes back)\n", n);
+        fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        power_deep_sleep(n);
+    } else if (!strncmp(l, "screen off", 10)) { bsp_display_lock(0); if (launcher_screen_on()) launcher_btn_long(); bsp_display_unlock(); printf("CMD screen %d\n", launcher_screen_on()); }
+    else if (!strncmp(l, "screen on", 9)) { bsp_display_lock(0); launcher_wake(); bsp_display_unlock(); printf("CMD screen %d\n", launcher_screen_on()); }
+    else printf("CMD unknown: %s\n", l);
+}
+
+static void cmd_task(void *a)
+{
+    static char line[640];
+    int len = 0;
+    while (1) {
+        uint8_t c;
+        if (usb_serial_jtag_read_bytes(&c, 1, portMAX_DELAY) != 1) continue;
+        if (c == '\r' || c == '\n') {
+            if (len) { line[len] = 0; run_line(line); len = 0; }
+        } else if (len < (int)sizeof(line) - 1) line[len++] = (char)c;
+    }
+}
+
+void cmd_start(void)
+{
+    usb_serial_jtag_driver_config_t cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    cfg.rx_buffer_size = 1024;
+    if (usb_serial_jtag_driver_install(&cfg) != ESP_OK) { ESP_LOGW("cmd", "usb driver install failed"); return; }
+    xTaskCreate(cmd_task, "cmd", 6144, NULL, 2, NULL);
+}
