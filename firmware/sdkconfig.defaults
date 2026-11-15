@@ -24,7 +24,9 @@ CONFIG_LV_USE_SNAPSHOT=y
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
-CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+# central role on: lets the watch read the paired phone's name (GATT client) and later talk to BLE sensors
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_GATT_CLIENT=y
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
 CONFIG_PM_ENABLE=y
@@ -54,7 +56,7 @@ CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
 CONFIG_BT_NIMBLE_SM_SC=y
 # CONFIG_BT_NIMBLE_SM_LEGACY is not set
 # (2 slots: IDF 5.5 ble_store_nvs.c does not compile with 1; the firmware still keeps ONE phone)
-CONFIG_BT_NIMBLE_MAX_BONDS=2
+CONFIG_BT_NIMBLE_MAX_BONDS=3
 CONFIG_BT_NIMBLE_SM_SC_ONLY=1
 # Wi-Fi code in flash instead of internal RAM: the hotspot only serves a few files, internal RAM is the bottleneck
 CONFIG_ESP_WIFI_IRAM_OPT=n

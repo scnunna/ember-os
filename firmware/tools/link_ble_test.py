@@ -128,8 +128,8 @@ async def attack_unpaired(dev, what):
 
 async def main():
     s = ember.open_watch(ember.find_port([]))
-    dev = await BleakScanner.find_device_by_filter(lambda d, ad: (d.name or '').startswith('Watch-'), timeout=15)
-    check(dev is not None, 'watch found by Bluetooth scan (name Watch-XXXX)', dev.name if dev else 'not found')
+    dev = await BleakScanner.find_device_by_filter(lambda d, ad: (d.name or '').startswith(('EmberWatchOS', 'Watch-')), timeout=15)
+    check(dev is not None, 'watch found by Bluetooth scan (name EmberWatchOS)', dev.name if dev else 'not found')
     if not dev: return
     usb(s, 'face', 'CMD face', 5)
 
@@ -150,7 +150,7 @@ async def main():
 
     # ---- 2. owner opens the pairing window (press-and-hold on the watch) and pairs with the shown code
     usb(s, 'launch 7', 'CMD launch')
-    usb(s, 'hold 202 130 1200', 'CMD hold', 5)
+    usb(s, 'tap 264 134', 'CMD tap'); usb(s, 'hold 130 454 1200', 'CMD hold', 5)
     r = usb(s, 'secstate', 'CMD secstate')
     check(r and 'pairing_open=1' in r, 'press-and-hold on the watch opens the pairing window', r)
     st, code = await pair_with_watch_code(s, dev.address)

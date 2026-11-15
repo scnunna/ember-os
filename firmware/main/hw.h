@@ -50,3 +50,5 @@ void hw_beep(int hz, int ms, int vol);             // blocking helper
 // ---- settings (NVS) ----
 int  hw_pref_get(const char *key, int def);
 void hw_pref_set(const char *key, int val);
+size_t hw_blob_get(const char *key, void *buf, size_t cap);   // returns bytes read (0 = none)
+void hw_blob_set(const char *key, const void *buf, size_t n);

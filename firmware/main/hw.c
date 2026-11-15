@@ -58,6 +58,16 @@ void hw_pref_set(const char *key, int val)
     nvs_set_i32(s_nvs, key, val);
     nvs_commit(s_nvs);
 }
+size_t hw_blob_get(const char *key, void *buf, size_t cap)
+{
+    size_t n = cap;
+    return nvs_get_blob(s_nvs, key, buf, &n) == ESP_OK ? n : 0;
+}
+void hw_blob_set(const char *key, const void *buf, size_t n)
+{
+    nvs_set_blob(s_nvs, key, buf, n);
+    nvs_commit(s_nvs);
+}
 
 // ---------------------------------------------------------------- power
 void hw_batt(batt_t *b)

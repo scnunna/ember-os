@@ -111,7 +111,7 @@ class ProtocolTest {
             Message.Time(1763000000, -18000),
             Message.Notif(7, "WhatsApp", "Mum", "Call me \"later\" é", listOf("OK", "On my way", "Call you later")),
             Message.NotifRm(7), Message.Weather(-3, "Snow", 1, -6),
-            Message.StepsReq, Message.HelloReq, Message.RecsReq, Message.WifiReq, Message.WifiOff,
+            Message.StepsReq, Message.HelloReq, Message.PhoneInfo("Pixel 8"), Message.RecsReq, Message.WifiReq, Message.WifiOff,
             Message.Note("M_1.wav", "Standup", "Shipped.", listOf("Buy card", "Test battery")),
             Message.TrCfg("en", "fr"), Message.Tr("them", "Bonjour", "Hello"),
             Message.AppLs, Message.AppPut("timer2", 1200), Message.AppData("AAEC"), Message.AppEnd, Message.AppRm("timer2"),

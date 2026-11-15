@@ -19,6 +19,7 @@
 #include "hw.h"
 #include "ble.h"
 #include "link.h"
+#include "devices.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "host/ble_store.h"
@@ -236,10 +237,10 @@ static esp_timer_handle_t s_unsec_tmr;           // drops connections that never
 bool ble_pair_window_open(void) { return esp_timer_get_time() < s_pair_until; }
 void ble_pair_open(void)
 {
-    ble_store_clear();                           // forget the old phone: only one bond, ever
+    // up to DEV_MAX remembered devices (Phone app > Devices: forget / rename / use); the oldest is replaced when full
     s_pair_until = esp_timer_get_time() + 120LL * 1000000;
     if (s_conn != BLE_HS_CONN_HANDLE_NONE) ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
-    ESP_LOGW(TAG, "pairing window open for 120 s, old bonds deleted");
+    ESP_LOGW(TAG, "pairing window open for 120 s");
 }
 bool ble_bonded(void)
 {
@@ -298,6 +299,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         s_conn = BLE_HS_CONN_HANDLE_NONE; s_asm_total = 0;
         esp_timer_stop(s_unsec_tmr);
+        devices_on_disconnect();
         ui_passkey(-1);
         link_on_disconnect();
         ESP_LOGI(TAG, "disconnected");
@@ -336,6 +338,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         if (sec) {
             esp_timer_stop(s_unsec_tmr);
             if (ble_pair_window_open()) { s_pair_until = 0; hw_buzz_pattern(2, 80, 100); }   // paired: close the window
+            devices_on_secure(ev->enc_change.conn_handle);    // remembered-devices list + reads its name
             link_on_secure(true);
         } else ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_AUTH_FAIL);
         break;
@@ -375,7 +378,8 @@ void ble_start(void)
 {
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_BT);
-    snprintf(s_name, sizeof(s_name), "Watch-%02X%02X", mac[4], mac[5]);
+    snprintf(s_name, sizeof(s_name), "EmberWatchOS");      // owner's choice (was Watch-XXXX); the phone app accepts both
+    (void)mac;
     s_enabled = hw_pref_get("ble", 1);
     s_txq = xQueueCreate(16, sizeof(txmsg_t));
     xTaskCreate(tx_task, "ble_tx", 3072, NULL, 4, NULL);
@@ -393,6 +397,7 @@ void ble_start(void)
     ble_store_config_init();
     esp_timer_create_args_t ta = {.callback = unsec_cb, .name = "ble_unsec"};
     esp_timer_create(&ta, &s_unsec_tmr);
+    devices_init();
     s_chronos = hw_pref_get("chronos", 0);            // S2: unauthenticated Chronos service off by default
     const struct ble_gatt_svc_def *gatt = s_chronos ? GATT_WITH_CHRONOS : GATT_LINK_ONLY;
     ble_svc_gap_init();

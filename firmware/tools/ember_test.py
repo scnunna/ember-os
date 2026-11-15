@@ -1,6 +1,6 @@
 """On-device tests for Ember OS (scripted apps + power manager). Needs the watch on USB.
    python tools/ember_test.py [COMx]      prints PASS/FAIL lines and a summary."""
-import sys, time, os, tempfile, subprocess
+import sys, time, os, re, tempfile, subprocess
 sys.path.insert(0, os.path.dirname(__file__))
 import ember
 
@@ -123,8 +123,13 @@ check(r is not None and 'sleep_allowed=0' in r, 'no light sleep while on USB pow
 
 # 8. cleanup
 # regression 2026-11-14: rapid install/remove while the screen slides used to hang LVGL's layout (task watchdog)
+def uptime_s():
+    r = ember.ask(s, 'pwr', 'CMD pwr', 4) or ''
+    m = re.search(r'active_s=(\d+) doze_s=(\d+)', r)
+    return int(m.group(1)) + int(m.group(2)) if m else -1
+up0, wall0 = uptime_s(), time.time()
 stress_ok = 0
-for trial in range(3):
+for trial in range(5):
     t_round = time.time()
     ends = [(n, push(n, f"function start() w.title('{n}') end"), round(time.time() - t_round, 1)) for n in ('r1', 'r2', 'r3', 'r4')]
     ember.ask(s, 'app run r4', 'CMD app run', 5, sink=[])
@@ -132,7 +137,9 @@ for trial in range(3):
     good = all(r and r.endswith('ok') for r in rs) and ember.ask(s, 'pwr', 'CMD pwr', 4) is not None
     stress_ok += good
     if not good: print('   stress round', trial, 'installs:', ends, 'removes:', rs)
-check(stress_ok == 3, 'rapid app install/remove during screen animations never hangs the UI', f'{stress_ok}/3 rounds')
+check(stress_ok == 5, 'rapid app install/remove during screen animations works every time', f'{stress_ok}/5 rounds')
+up1 = uptime_s()
+check(up0 >= 0 and up1 - up0 >= (time.time() - wall0) - 5, 'the watch did not crash/reboot during the stress', f'uptime +{up1 - up0}s in {time.time() - wall0:.0f}s')
 
 rm_replies = {n: ember.ask(s, f'app rm {n}', 'CMD app rm', 6) for n in ('t_api', 't_loop', 't_bad', 't_mem', 't_tmr')}
 r = ember.ask(s, 'app ls', 'CMD app ls')

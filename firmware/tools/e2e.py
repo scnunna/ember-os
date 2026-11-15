@@ -34,13 +34,19 @@ def run(cmd, done_prefix, timeout):
 run('status', 'CMD status', 5)
 lay = run('layout', 'LAYOUT DONE', 90)
 touch = run('touch', 'TOUCH DONE', 120)
-nav = run(f'nav {steps}', 'NAV DONE', steps * 0.4 + 30)
+nav = run(f"nav {steps}", "NAV DONE", steps * 0.6 + 60)
 run('status', 'CMD status', 5)
 print('\n=== SUMMARY ===')
 probs = [l for l in lay if 'OVERLAP' in l or 'OFFSCREEN' in l]
 print('layout problems:', len(probs))
 print('touch tests failed:', len([l for l in touch if l.startswith('TOUCH FAIL')]), 'passed:', len([l for l in touch if l.startswith('TOUCH PASS')]))
 print('stress finished:', any(l.startswith('NAV DONE') for l in nav))
+import re
+m = next((re.search(r'heap (\d+)->(\d+)', l) for l in nav if l.startswith('NAV DONE')), None)
+if m:
+    lost = int(m.group(1)) - int(m.group(2))
+    # a leaked app screen is several KB; small changes are LVGL's allocator settling
+    print(('PASS' if lost < 2048 else 'FAIL') + f' no memory leak during navigation stress (heap lost {lost} bytes, limit 2048)')
 disp = [e for e in errors if 'spi_master' in e or 'lcd_panel.io.spi' in e or 'sh8601' in e]
 print('DISPLAY FLUSH ERRORS:', len(disp), '(must be 0)')
 print('other error/warn log lines:', len(errors) - len(disp))

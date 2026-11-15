@@ -50,6 +50,9 @@ def ask(s, line, prefix, timeout=4.0, sink=None):
             else: print(l)
         elif 'task_wdt' in l or l.startswith('Backtrace') or 'Guru' in l:
             print('WATCH:', l[:200])            # the watchdog's report about a stuck task: always show it
+        elif os.environ.get('EMBER_SHOW_ERRORS') and (l.startswith('E (') or l.startswith('W (')) \
+                and 'FT5x06' not in l and 'lcd_panel.io.i2c' not in l and 'pull-up' not in l:
+            print('WATCHLOG:', l[:200])         # error/warning log lines (debugging), known touch-chip noise skipped
     return None
 
 

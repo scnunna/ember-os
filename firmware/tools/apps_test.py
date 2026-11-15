@@ -103,6 +103,9 @@ check(up0 > -1 and (up1 - up0) >= (wall1 - wall0) - 5, 'watch never rebooted dur
       f'watch uptime grew {up1 - up0}s while {wall1 - wall0:.0f}s passed')
 allbad = [l for l in log if BAD.search(l)]
 check(not allbad, 'no Lua errors or crash traces anywhere in the log', str(allbad[:3]))
+ask('launch 7', 'CMD launch', 6)                  # explicit: the Devices panel can cover it during blind tapping
+ask('tap 205 342', 'CMD tap'); read_until('NO-SUCH', 6)
+ask('tap 205 342', 'CMD tap'); read_until('NO-SUCH', 3)
 check(any('AP up' in l for l in log) and any('AP down' in l for l in log), 'Phone: Wi-Fi hotspot really starts and stops (not just "no crash")')
 r, _ = ask('beep', 'CMD beep', 6)
 check(r is not None and 'speaker=ok' in r, 'speaker still works after Wi-Fi has been used', r)

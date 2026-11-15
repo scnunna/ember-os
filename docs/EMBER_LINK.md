@@ -87,7 +87,7 @@ That makes 133 bytes per block, 256 samples, 16 ms at 16 kHz, so 62.5 blocks/s a
 
 ## Security (v1.2, 2026-11-14): required, not optional
 - **Pairing:** LE Secure Connections with bonding and MITM protection, method **Passkey Entry**. The watch shows a random 6-digit code; the user types it on the phone (Android's system pairing dialog). Legacy pairing is refused.
-- **One phone only:** the watch keeps a single bond. A new phone can pair only when the user opens **Settings → Pair new phone** on the watch. That deletes the old bond and opens a 2-minute pairing window. Outside the window, pairing requests are rejected.
+- **Only devices you add:** a new device can pair only while the 2-minute pairing window is open. You open it with **Phone → Devices → Hold: add device** on the watch. Outside the window, pairing requests are rejected. (v1.2 kept one bond and wiped it on every pairing; since v1.3 up to 3 are kept, see "Name and devices".)
 - **Every Ember Link characteristic needs an encrypted + authenticated link.** CMD writes and CCCD subscriptions (EVT, AUDIO) on an unencrypted link fail with *Insufficient Authentication* (0x05), which makes Android start pairing. The watch never notifies EVT or AUDIO unless the link is encrypted, authenticated and bonded.
 - **Chronos service:** off by default (it has no authentication). Settings → *Chronos* turns it on, which takes effect after a reboot.
 - **Confirm on the watch** (S3). These need a tap on the watch's *Allow* button within 30 s; otherwise the reply is `{"t":"err","re":<t>,"msg":"denied on watch"}`:
@@ -100,6 +100,12 @@ That makes 133 bytes per block, 256 samples, 16 ms at 16 kHz, so 62.5 blocks/s a
   - `wifi` reply: `{"t":"wifi","ssid","pass","ip","token"}`.
   - Every HTTP endpoint needs `?k=<token>` (or the header `X-Ember-Key: <token>`); otherwise it returns 403.
   - The token is only ever sent over the encrypted link, or shown on the watch screen.
+- **Name and devices (v1.3, 2026-11-15):**
+  - The watch advertises as **`EmberWatchOS`** (owner's choice). Phones should also accept the old `Watch-XXXX` name.
+  - It remembers **up to 3 devices**, each added only through the pairing window + code. When full, the least recently seen is replaced.
+  - Watch Phone app → **Devices** lists them (your name for it, its own Bluetooth name, last seen) with **Use** (accept only that device for 2 min; the current one is disconnected), **Rename**, **Hold: forget** (deletes its keys) and **Hold: add device**.
+  - The watch reads each device's own name (GAP Device Name) after pairing. The phone should also send **`{"t":"phone_info","name":"Pixel 8"}`** after connecting.
+  - USB shell: `devices` prints the list.
 - **`hello` timing and `hello_req`:** a bonded phone's subscription is restored by the watch the moment encryption starts, often before the phone app listens. The watch therefore sends `hello` (+ `steps`) about 1.2 s after the link becomes secure. The phone should also send **`{"t":"hello_req"}`** once its notification handler is ready; the reply is `hello`.
 - **New message `rec_del`** `{"n": name, "s": size}`: the watch deletes the recording (and its .marks) only if the size matches. The phone sends it after a verified download. Reply: `recs`.
 

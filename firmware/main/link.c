@@ -23,6 +23,7 @@
 #include "link.h"
 #include "adpcm.h"
 #include "practice.h"
+#include "devices.h"
 
 static const char *TAG = "link";
 #define FW_VERSION "1.1"
@@ -277,24 +278,32 @@ static void send_recs(void)
     char dir[40]; snprintf(dir, sizeof(dir), "%s/rec", hw_storage_root());
     cJSON *o = cJSON_CreateObject(), *arr = cJSON_AddArrayToObject(o, "files");
     cJSON_AddStringToObject(o, "t", "recs");
+    // newest 40 (file names start with the recording time, so name order = time order); readdir order is arbitrary
+    #define MAXR 200
+    EXT_RAM_BSS_ATTR static char names[MAXR][32];      // 6.4 KB in PSRAM, not scarce internal RAM
+    int cnt = 0;
     DIR *d = opendir(dir);
     struct dirent *e;
-    int n = 0;
-    while (d && (e = readdir(d)) && n < 40) {
+    while (d && (e = readdir(d)) && cnt < MAXR) {
         size_t l = strlen(e->d_name);
-        if (l < 5 || strcasecmp(e->d_name + l - 4, ".wav")) continue;
+        if (l < 5 || l >= sizeof(names[0]) || strcasecmp(e->d_name + l - 4, ".wav")) continue;
+        strcpy(names[cnt++], e->d_name);
+    }
+    if (d) closedir(d);
+    qsort(names, cnt, sizeof(names[0]), (int (*)(const void *, const void *))strcmp);
+    for (int k = cnt - 1, n = 0; k >= 0 && n < 40; k--) {
         char p[128]; struct stat st;
-        snprintf(p, sizeof(p), "%s/%s", dir, e->d_name);
+        snprintf(p, sizeof(p), "%s/%s", dir, names[k]);
         if (stat(p, &st)) continue;
         cJSON *f = cJSON_CreateObject();
-        cJSON_AddStringToObject(f, "n", e->d_name); cJSON_AddNumberToObject(f, "s", st.st_size);
-        uint32_t mk[32]; int nm = rec_marks_for(e->d_name, mk, 32);
+        cJSON_AddStringToObject(f, "n", names[k]); cJSON_AddNumberToObject(f, "s", st.st_size);
+        uint32_t mk[32]; int nm = rec_marks_for(names[k], mk, 32);
         cJSON *ma = cJSON_AddArrayToObject(f, "marks");
         for (int i = 0; i < nm; i++) cJSON_AddItemToArray(ma, cJSON_CreateNumber(mk[i]));
         cJSON_AddItemToArray(arr, f);
         n++;
     }
-    if (d) closedir(d);
+    if (cnt > 40) cJSON_AddNumberToObject(o, "more", cnt - 40);     // older ones exist but aren't listed
     send_obj(o);
 }
 static void send_apps(void)
@@ -454,6 +463,7 @@ static void handle(const char *json, bool trusted)
         s_weather.at = esp_timer_get_time();
     } else if (!strcmp(t, "steps_req")) link_send_steps();
     else if (!strcmp(t, "hello_req")) send_hello();
+    else if (!strcmp(t, "phone_info")) { char nm[32]; copy_str(nm, sizeof(nm), m, "name"); devices_set_name_current(nm); }
     else if (!strcmp(t, "recs_req")) send_recs();
     else if (!strcmp(t, "wifi_req")) {
         if (!allowed(trusted, "Phone wants to turn on the Wi-Fi hotspot\n(to download recordings). Allow?")) goto done;

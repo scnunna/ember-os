@@ -17,7 +17,7 @@ import java.io.File
 object Errors {
     const val BT_OFF = "BT-01: Bluetooth is off. Turn it on in Android settings, then try again."
     const val BT_PERMISSION = "BT-02: This app needs the Nearby devices permission. Tap Allow when asked."
-    const val BT_NO_WATCH = "BT-03: No watch found yet. Wake the watch (it should be called Watch-XXXX) and tap Pair again."
+    const val BT_NO_WATCH = "BT-03: No watch found yet. Wake the watch (it is called EmberWatchOS) and tap Pair again."
     const val LINK_LOST = "LK-01: The watch connection dropped. It will reconnect by itself; keep the watch close."
     const val NOTIF_ACCESS = "NT-01: Notification access is off. Tap the button to open the setting and allow Ember Companion."
     const val HC_MISSING = "HC-01: Health Connect is not available on this phone. Install or update it from the Play Store."

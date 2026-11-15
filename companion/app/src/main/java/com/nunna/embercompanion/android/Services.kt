@@ -185,13 +185,13 @@ class EmberNotificationListener : NotificationListenerService() {
     }
 }
 
-/** Pairing with the Companion Device Manager: shows the system chooser filtered to names starting with `Watch-`. */
+/** Pairing with the Companion Device Manager: shows the system chooser filtered to EmberWatchOS (older firmware: `Watch-XXXX`). */
 object Pairing {
     fun request(ctx: Context, onChooser: (IntentSender) -> Unit, onError: (String) -> Unit) {
         val cdm = ctx.getSystemService(Context.COMPANION_DEVICE_SERVICE) as CompanionDeviceManager
         val bt = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
         if (bt == null || !bt.isEnabled) { onError(Errors.BT_OFF); return }
-        val filter = BluetoothLeDeviceFilter.Builder().setNamePattern(Pattern.compile("^Watch-.*")).build()
+        val filter = BluetoothLeDeviceFilter.Builder().setNamePattern(Pattern.compile("^(EmberWatchOS|Watch-).*")).build()
         val req = AssociationRequest.Builder().addDeviceFilter(filter).setSingleDevice(false).build()
         cdm.associate(req, object : CompanionDeviceManager.Callback() {
             @Deprecated("Android 12/12L") override fun onDeviceFound(chooserLauncher: IntentSender) { onChooser(chooserLauncher) }

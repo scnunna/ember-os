@@ -103,6 +103,10 @@ object AppGraph {
             nowMs = { System.currentTimeMillis() },
             tzOffsetSeconds = { TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000 },
             languages = { prefs.languages.value },
+            phoneName = {
+                android.provider.Settings.Global.getString(app.contentResolver, android.provider.Settings.Global.DEVICE_NAME)
+                    ?: android.os.Build.MODEL
+            },
         )
         gatt = EmberGatt(app) { link }
         flow = TranslateFlow(

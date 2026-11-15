@@ -122,10 +122,10 @@ check('counter' in apps(), 'rec_del cannot reach outside the recordings folder')
 
 # --- S1: pairing window only by press-and-HOLD
 ask('launch 7', 'CMD launch')
-ask('tap 202 130', 'CMD tap')
+ask('tap 264 134', 'CMD tap'); ask('tap 130 454', 'CMD tap')
 r = ask('secstate', 'CMD secstate')
-check(r and 'pairing_open=0' in r, 'a short tap on "Hold: pair phone" does NOT open pairing', r)
-ask('hold 202 130 1200', 'CMD hold', 5)
+check(r and 'pairing_open=0' in r, 'a short tap on "Hold: add device" does NOT open pairing', r)
+ask('tap 264 134', 'CMD tap'); ask('hold 130 454 1200', 'CMD hold', 5)
 r = ask('secstate', 'CMD secstate')
 check(r and 'pairing_open=1' in r, 'press-and-hold opens the 2-minute pairing window', r)
 ask('face', 'CMD face', 5)

@@ -5,6 +5,7 @@
 #include "bsp/esp-bsp.h"
 #include "esp_lcd_touch.h"
 #include "esp_timer.h"
+#include "display/lv_display_private.h"   // scr_to_load: cancel an unfinished screen slide (see cancel_pending_open)
 #include "app.h"
 #include "hw.h"
 
@@ -59,15 +60,43 @@ static lv_obj_t *new_screen(void)
 }
 
 // ---- navigation ----
+// Leaving an app whose opening slide hasn't finished: LVGL would silently ignore the new screen load (the target is
+// still the "active" screen) and the app screen would finish sliding in, orphaned -> leak + wrong screen shown.
+// Cancel that slide instead: the screen underneath stays, and the half-shown app screen is deleted right away.
+static bool cancel_pending_open(lv_obj_t *app)
+{
+    lv_display_t *d = lv_display_get_default();
+    if (!app || !d || d->scr_to_load != app) return false;
+    // While the slide runs LVGL already has act_scr = app and prev_scr = the screen underneath; before the slide
+    // starts, act_scr is still the screen underneath. Either way: make the screen underneath active again FIRST,
+    // then delete the app (deleting it while it was act_scr left a dangling pointer -> endless layout loop).
+    lv_obj_t *under = (d->act_scr == app) ? d->prev_scr : d->act_scr;
+    lv_anim_delete(app, NULL);
+    if (under) {
+        lv_anim_delete(under, NULL);
+        lv_obj_set_pos(under, 0, 0);
+        lv_obj_remove_local_style_prop(under, LV_STYLE_OPA, 0);
+    }
+    d->act_scr = under;
+    d->prev_scr = NULL; d->scr_to_load = NULL; d->del_prev = false; d->draw_prev_over_act = false;
+    lv_obj_delete(app);                              // no longer referenced by the display: safe
+    if (under) lv_obj_invalidate(under);
+    return true;
+}
+
 void launcher_face(void)
 {
     if (s_state == ST_APP) app_stop_idx(s_cur);
     bool del = (s_state == ST_APP);
     lv_obj_t *old = s_app;
+    if (del && cancel_pending_open(old)) del = false;   // already gone; the grid is the active screen again
     s_state = ST_FACE; s_cur = -1; s_app = NULL;
     face_tick();
-    lv_screen_load_anim(s_face, LV_SCREEN_LOAD_ANIM_MOVE_RIGHT, 220, 0, false);
-    if (del && old) lv_obj_delete_delayed(old, 400);
+    // auto_del: LVGL deletes the old app screen exactly when ITS slide ends. The previous fixed 400 ms
+    // lv_obj_delete_delayed could free a screen that was still sliding (rapid navigation) -> the animation
+    // wrote to freed memory -> LoadProhibited crash + reboot (looked like an "install freeze").
+    (void)old;
+    lv_screen_load_anim(s_face, LV_SCREEN_LOAD_ANIM_MOVE_RIGHT, 220, 0, del);
 }
 
 void launcher_home(void)
@@ -77,8 +106,8 @@ void launcher_home(void)
     lv_obj_t *old = s_app;
     lv_scr_load_anim_t anim = (s_state == ST_FACE) ? LV_SCREEN_LOAD_ANIM_MOVE_TOP : LV_SCREEN_LOAD_ANIM_MOVE_RIGHT;
     s_state = ST_GRID; s_cur = -1; s_app = NULL;
-    lv_screen_load_anim(s_grid, anim, 220, 0, false);
-    if (del && old) lv_obj_delete_delayed(old, 400);
+    if (del && cancel_pending_open(old)) return;      // the grid never stopped being the active screen
+    lv_screen_load_anim(s_grid, anim, 220, 0, del);   // auto_del: see launcher_face
 }
 
 void launcher_back(void)

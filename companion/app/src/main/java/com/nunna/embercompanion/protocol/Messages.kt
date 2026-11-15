@@ -11,6 +11,7 @@ sealed interface Message {
     data class Weather(val temp: Int, val text: String, val hi: Int, val lo: Int) : Message
     data object StepsReq : Message
     data object HelloReq : Message          // v1.2: ask for hello once our notification handler is ready
+    data class PhoneInfo(val name: String) : Message   // v1.2: this phone's name for the watch's Devices list
     data object RecsReq : Message
     data object WifiReq : Message
     data object WifiOff : Message
@@ -71,6 +72,7 @@ object MessageCodec {
         is Message.Weather -> obj("weather") { put("temp", m.temp); put("text", m.text); put("hi", m.hi); put("lo", m.lo) }
         Message.StepsReq -> obj("steps_req")
         Message.HelloReq -> obj("hello_req")
+        is Message.PhoneInfo -> obj("phone_info") { put("name", m.name) }
         Message.RecsReq -> obj("recs_req")
         Message.WifiReq -> obj("wifi_req")
         Message.WifiOff -> obj("wifi_off")
@@ -132,6 +134,7 @@ object MessageCodec {
                 "weather" -> Message.Weather(o.int("temp"), o.str("text") ?: "", o.int("hi"), o.int("lo"))
                 "steps_req" -> Message.StepsReq
                 "hello_req" -> Message.HelloReq
+                "phone_info" -> Message.PhoneInfo(o.str("name") ?: "")
                 "recs_req" -> Message.RecsReq
                 "wifi_req" -> Message.WifiReq
                 "wifi_off" -> Message.WifiOff

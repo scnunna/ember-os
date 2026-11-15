@@ -42,6 +42,7 @@ class LinkController(
     private val nowMs: () -> Long,
     private val tzOffsetSeconds: () -> Int,
     private val languages: () -> TrLanguages?,
+    private val phoneName: () -> String? = { null },   // v1.2: shown on the watch's Phone screen
 ) {
     private val _phase = MutableStateFlow(LinkPhase.DISCONNECTED)
     val phase: StateFlow<LinkPhase> = _phase.asStateFlow()
@@ -77,6 +78,7 @@ class LinkController(
         _phase.value = LinkPhase.CONNECTED
         pttSide = null
         send(Message.HelloReq)                 // the watch's own hello can arrive before we listen (restored CCCD)
+        phoneName()?.takeIf { it.isNotBlank() }?.let { send(Message.PhoneInfo(it.take(31))) }
         send(Message.Time(nowMs() / 1000, tzOffsetSeconds()))
         requestSteps()
         send(Message.PracticeReq)
