@@ -62,14 +62,110 @@ def labels(s):
     return re.findall(r'\[([^\]]*)\]', r or '')
 
 
+ALLOW = (306, 407)
+
+
+def is_paired(st):
+    from winrt.windows.devices.enumeration import DevicePairingResultStatus as R
+    return st in (R.PAIRED, R.ALREADY_PAIRED)
+
+
+async def winrt_dev(address):
+    from winrt.windows.devices.bluetooth import BluetoothLEDevice
+    return await BluetoothLEDevice.from_bluetooth_address_async(int(address.replace(':', ''), 16))
+
+
+async def unpair(address):
+    d = await winrt_dev(address)
+    if d and d.device_information.pairing.is_paired:
+        await d.device_information.pairing.unpair_async()
+
+
+async def pair_with_watch_code(s, address):
+    """Pair through Windows with Passkey Entry; the 6-digit code is read off the watch screen over USB."""
+    from winrt.windows.devices.enumeration import DevicePairingKinds, DevicePairingProtectionLevel
+    d = await winrt_dev(address)
+    cp = d.device_information.pairing.custom
+    seen = {}
+
+    def on_request(sender, args):
+        if args.pairing_kind != DevicePairingKinds.PROVIDE_PIN:
+            return
+        deferral = args.get_deferral()
+        code = None
+        for _ in range(12):                      # the code appears on the watch within ~1 s
+            time.sleep(0.5)
+            m = re.search(r'\[(\d{3}) (\d{3})\]', usb(s, 'labels', 'CMD labels') or '')
+            if m: code = m.group(1) + m.group(2); break
+        seen['code'] = code
+        if code: args.accept_with_pin(code)
+        deferral.complete()
+
+    token = cp.add_pairing_requested(on_request)
+    r = await cp.pair_with_protection_level_async(DevicePairingKinds.PROVIDE_PIN, DevicePairingProtectionLevel.ENCRYPTION_AND_AUTHENTICATION)
+    cp.remove_pairing_requested(token)
+    return r.status, seen.get('code')
+
+
+async def attack_unpaired(dev, what):
+    """Behave like a stranger: connect, try to subscribe + send a command. Must get nothing."""
+    ph_msgs, err = [], None
+    try:
+        async with BleakClient(dev, timeout=15, winrt=dict(use_cached_services=False)) as c:
+            ph = Phone(c)
+            try:
+                await c.start_notify(EVT, ph.on_evt)
+                await ph.send({'t': 'find_watch'})
+                await ph.send({'t': 'steps_req'})
+            except Exception as e:
+                err = type(e).__name__
+            await asyncio.sleep(3)
+            ph_msgs = ph.msgs
+    except Exception as e:
+        err = err or type(e).__name__
+    return ph_msgs, err
+
+
 async def main():
     s = ember.open_watch(ember.find_port([]))
     dev = await BleakScanner.find_device_by_filter(lambda d, ad: (d.name or '').startswith('Watch-'), timeout=15)
     check(dev is not None, 'watch found by Bluetooth scan (name Watch-XXXX)', dev.name if dev else 'not found')
     if not dev: return
-    async with BleakClient(dev, timeout=20) as c:
+    usb(s, 'face', 'CMD face', 5)
+
+    # ---- 1. a stranger (not paired, pairing window closed) gets nothing
+    await unpair(dev.address)
+    for _ in range(30):                          # make sure no pairing window is left open from an earlier run
+        r = usb(s, 'secstate', 'CMD secstate')
+        if r and 'pairing_open=0' in r: break
+        time.sleep(5)
+    bonded_before = 'bonded=1' in (r or '')
+    msgs, err = await attack_unpaired(dev, 'stranger')
+    check(not msgs, 'UNPAIRED device: no data at all from the watch', f'got {len(msgs)} messages, error={err}')
+    st, _ = await pair_with_watch_code(s, dev.address)
+    r = usb(s, 'secstate', 'CMD secstate')
+    check(not is_paired(st) and r and 'pairing_open=0' in r and (('bonded=1' in r) == bonded_before),
+          'pairing attempt OUTSIDE the pairing window is refused (watch keeps its bonds unchanged)', f'{st} | {r}')
+    await unpair(dev.address)
+
+    # ---- 2. owner opens the pairing window (press-and-hold on the watch) and pairs with the shown code
+    usb(s, 'launch 7', 'CMD launch')
+    usb(s, 'hold 202 130 1200', 'CMD hold', 5)
+    r = usb(s, 'secstate', 'CMD secstate')
+    check(r and 'pairing_open=1' in r, 'press-and-hold on the watch opens the pairing window', r)
+    st, code = await pair_with_watch_code(s, dev.address)
+    check(code and len(code) == 6, 'watch showed a 6-digit pairing code (read off its screen)', code)
+    check(is_paired(st), 'pairing with the code succeeds (LE Secure Connections + passkey)', st)
+    r = usb(s, 'secstate', 'CMD secstate')
+    check(r and 'bonded=1' in r and 'pairing_open=0' in r, 'watch stored the bond and closed the pairing window', r)
+    usb(s, 'face', 'CMD face', 5)
+
+    async with BleakClient(dev, timeout=20, winrt=dict(use_cached_services=False)) as c:
         ph = Phone(c)
         check(c.is_connected, 'connected over BLE', f'MTU {c.mtu_size}')
+        uuids = [x.uuid for x in c.services]
+        check(SVC in uuids and all(c.services.get_characteristic(u) for u in (CMD, EVT, AUD)),
+              'Ember Link service + CMD/EVT/AUDIO have exactly the UUIDs in the spec', uuids)
         await c.start_notify(EVT, ph.on_evt)
         await c.start_notify(AUD, ph.on_audio)
         hello = await ph.wait('hello', 5)
@@ -130,11 +226,16 @@ async def main():
         for i in range(0, len(src), 1536):
             await ph.send({'t': 'app_data', 'b64': base64.b64encode(src[i:i + 1536]).decode()})
         await ph.send({'t': 'app_end'})
+        await asyncio.sleep(1.6)                              # S3: the watch asks first
+        check(any('Allow this?' in x for x in labels(s)), 'install over Bluetooth asks for Allow on the watch')
+        usb(s, f'tap {ALLOW[0]} {ALLOW[1]}', 'CMD tap')
         ok = await ph.wait('app_ok', 6)
         await ph.send({'t': 'app_ls'})
         ap = await ph.wait('apps', 4)
         check(ok and ap and 'bletest' in ap.get('list', []), 'Lua app installed over Bluetooth appears in the list', ap)
         await ph.send({'t': 'app_rm', 'name': 'bletest'})
+        await asyncio.sleep(1.6)
+        usb(s, f'tap {ALLOW[0]} {ALLOW[1]}', 'CMD tap')
         ap = await ph.wait('apps', 4)
         check(ap and 'bletest' not in ap.get('list', []), 'Lua app removed over Bluetooth', ap)
 
@@ -167,27 +268,44 @@ async def main():
         await ph.send({'t': 'find_watch'})
         await asyncio.sleep(0.5)
         await ph.send({'t': 'wifi_req'})
+        await asyncio.sleep(1.6)
+        usb(s, f'tap {ALLOW[0]} {ALLOW[1]}', 'CMD tap')
         wf = await ph.wait('wifi', 12)
-        check(wf and wf.get('ssid', '').startswith('Watch-') and len(wf.get('pass', '')) >= 8 and wf.get('ip') == '192.168.4.1',
-              'Wi-Fi handshake: watch starts its hotspot and sends SSID/password over BLE', {k: v for k, v in (wf or {}).items() if k != 'pass'})
+        check(wf and wf.get('ssid', '').startswith('Watch-') and len(wf.get('pass', '')) == 12 and re.fullmatch(r'[0-9a-f]{16}', wf.get('token', '')) and wf.get('ip') == '192.168.4.1',
+              'Wi-Fi handshake over the ENCRYPTED link: SSID + 12-char password + access key', {k: v for k, v in (wf or {}).items() if k not in ('pass', 'token')})
         await ph.send({'t': 'wifi_off'})
+        await asyncio.sleep(3)
+        r = usb(s, 'secstate', 'CMD secstate')
+        check(c.is_connected and r and 'link_ready=1' in r, 'Bluetooth link survives the Wi-Fi hotspot on/off', f'connected={c.is_connected} {r}')
 
         # music remote: tap every Remote button -> music_cmd / find_phone events
         usb(s, 'launch 6', 'CMD launch')
         usb(s, 'tapall 1', 'CMD tapall', 40)
+        await asyncio.sleep(1.5)                     # let the queued radio events reach the 'phone' first
         mc = [m for m in ph.msgs if m.get('t') in ('music_cmd', 'find_phone')]
         check(len(mc) >= 4, 'Remote app buttons reach the phone (music / find phone)', [m.get('cmd', m.get('on')) for m in mc])
         bad = [m for m in ph.msgs if m.get('t') == '_bad']
         check(not bad, 'every watch message was valid JSON', bad[:2])
     # reconnect
     await asyncio.sleep(2)
-    async with BleakClient(dev, timeout=20) as c2:
+    async with BleakClient(dev, timeout=20, winrt=dict(use_cached_services=False)) as c2:
         ph2 = Phone(c2)
         await c2.start_notify(EVT, ph2.on_evt)
-        check(await ph2.wait('hello', 6) is not None, 'reconnect works (hello again)')
+        await ph2.send({'t': 'hello_req'})          # what Ember Companion does once it is listening (v1.2)
+        check(await ph2.wait('hello', 6) is not None, 'reconnect works (encrypted again from the stored bond, no new pairing)')
+
+    # ---- 4. this laptop forgets the watch -> it is a stranger again: no data, and re-pairing is refused
+    await unpair(dev.address)
+    await asyncio.sleep(2)
+    msgs, err = await attack_unpaired(dev, 'forgotten')
+    check(not msgs, 'after forgetting the pairing the laptop gets nothing', f'{len(msgs)} messages, error={err}')
+    st, _ = await pair_with_watch_code(s, dev.address)
+    check(not is_paired(st), 're-pairing without opening the window on the watch is refused', st)
+    await unpair(dev.address)
     usb(s, 'face', 'CMD face', 5)
     print(f'LINK BLE TESTS DONE pass={sum(res)} fail={len(res) - sum(res)}')
 
 
-asyncio.run(main())
-sys.exit(0 if res and all(res) else 1)
+if __name__ == '__main__':
+    asyncio.run(main())
+    sys.exit(0 if res and all(res) else 1)

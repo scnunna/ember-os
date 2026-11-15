@@ -28,7 +28,7 @@ static const char *TAG = "ble";
 static void send_battery(void);
 
 // 6e400001-b5a3-f393-e0a9-e50e24dcca9e (little-endian byte order for NimBLE)
-#define UUID_BYTES(n) {0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, (n), 0x00, 0x40, 0x6e}
+#define UUID_BYTES(n) 0x9e, 0xca, 0xdc, 0x24, 0x0e, 0xe5, 0xa9, 0xe0, 0x93, 0xf3, 0xa3, 0xb5, (n), 0x00, 0x40, 0x6e   // no braces (see link.c)
 static const ble_uuid128_t UUID_SVC = BLE_UUID128_INIT(UUID_BYTES(0x01));
 static const ble_uuid128_t UUID_RX = BLE_UUID128_INIT(UUID_BYTES(0x02));
 static const ble_uuid128_t UUID_TX = BLE_UUID128_INIT(UUID_BYTES(0x03));
@@ -290,6 +290,9 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             s_conn = ev->connect.conn_handle; link_on_connect(s_conn); ESP_LOGI(TAG, "connected");
             esp_timer_stop(s_unsec_tmr);
             esp_timer_start_once(s_unsec_tmr, 30LL * 1000000);
+            // ask a bonded phone to switch on encryption right away (Security Request), so the link is ready
+            // without waiting for the phone's first write; an unknown device gets refused at the passkey step
+            if (ble_bonded()) ble_gap_security_initiate(s_conn);
         } else advertise();
         break;
     case BLE_GAP_EVENT_DISCONNECT:

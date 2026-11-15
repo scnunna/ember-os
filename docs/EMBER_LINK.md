@@ -100,6 +100,7 @@ That makes 133 bytes per block, 256 samples, 16 ms at 16 kHz, so 62.5 blocks/s a
   - `wifi` reply: `{"t":"wifi","ssid","pass","ip","token"}`.
   - Every HTTP endpoint needs `?k=<token>` (or the header `X-Ember-Key: <token>`); otherwise it returns 403.
   - The token is only ever sent over the encrypted link, or shown on the watch screen.
+- **`hello` timing and `hello_req`:** a bonded phone's subscription is restored by the watch the moment encryption starts, often before the phone app listens. The watch therefore sends `hello` (+ `steps`) about 1.2 s after the link becomes secure. The phone should also send **`{"t":"hello_req"}`** once its notification handler is ready; the reply is `hello`.
 - **New message `rec_del`** `{"n": name, "s": size}`: the watch deletes the recording (and its .marks) only if the size matches. The phone sends it after a verified download. Reply: `recs`.
 
 ## Versioning

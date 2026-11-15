@@ -40,12 +40,12 @@ class LinkControllerTest {
         assertEquals(LinkPhase.CONNECTED, link.phase.value)
         watch.say(Message.Hello("1.0", "Watch-ABCD", 80, 4000, false, 500))
         assertEquals(80, link.watch.value!!.batt)
-        // time first, then steps_req, practice_req, tr_cfg
-        assertEquals(listOf("Time", "StepsReq", "PracticeReq", "TrCfg"), watch.types())
-        val t = watch.received[0] as Message.Time
+        // hello_req first (v1.2: the watch's own hello can arrive before we listen), then time, steps_req, practice_req, tr_cfg
+        assertEquals(listOf("HelloReq", "Time", "StepsReq", "PracticeReq", "TrCfg"), watch.types())
+        val t = watch.received[1] as Message.Time
         assertEquals(1_763_000_000L, t.epoch)
         assertEquals(-18000, t.tz)
-        assertEquals(Message.TrCfg("en", "fr"), watch.received[3])
+        assertEquals(Message.TrCfg("en", "fr"), watch.received[4])
     }
 
     @Test fun nothingIsSentBeforeTheLinkIsSecure() {
@@ -56,7 +56,7 @@ class LinkControllerTest {
         assertTrue(watch.received.isEmpty())
         link.onReady(247, secure = true)
         assertEquals(LinkPhase.CONNECTED, link.phase.value)
-        assertEquals("Time", watch.types().first())
+        assertEquals(listOf("HelloReq", "Time"), watch.types().take(2))
     }
 
     @Test fun pttOffCarriesBlockCount() {

@@ -361,7 +361,7 @@ static bool s_flash_mounted;
 static void mount_flash(void)
 {
     if (s_flash_mounted) return;
-    esp_vfs_fat_mount_config_t cfg = {.format_if_mount_failed = true, .max_files = 4, .allocation_unit_size = 16 * 1024};
+    esp_vfs_fat_mount_config_t cfg = {.format_if_mount_failed = true, .max_files = 8,   /* apps, kv, logs, uploads can overlap */ .allocation_unit_size = 16 * 1024};
     if (esp_vfs_fat_spiflash_mount_rw_wl("/flash", "storage", &cfg, &s_wl) == ESP_OK) s_flash_mounted = true;
     else ESP_LOGE(TAG, "flash FAT mount failed");
 }

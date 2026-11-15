@@ -76,6 +76,7 @@ class LinkController(
         _mtu.value = mtu
         _phase.value = LinkPhase.CONNECTED
         pttSide = null
+        send(Message.HelloReq)                 // the watch's own hello can arrive before we listen (restored CCCD)
         send(Message.Time(nowMs() / 1000, tzOffsetSeconds()))
         requestSteps()
         send(Message.PracticeReq)

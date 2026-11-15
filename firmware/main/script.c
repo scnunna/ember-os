@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <strings.h>
 #include <math.h>
+#include <errno.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include "esp_log.h"
@@ -567,6 +568,7 @@ bool script_remove(const char *name)
     bsp_display_lock(0);
     if (s_cur >= 0 && !strcmp(script_name(s_cur), name)) launcher_face();
     bool ok = remove(p) == 0;
+    if (!ok) printf("EMBER remove %s failed: errno %d (%s)\n", p, errno, strerror(errno));   // diagnose the rare stress flake
     snprintf(p, sizeof(p), APP_DIR "/%s.kv", name);
     remove(p);
     script_rescan();

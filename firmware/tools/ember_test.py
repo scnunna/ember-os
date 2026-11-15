@@ -125,12 +125,13 @@ check(r is not None and 'sleep_allowed=0' in r, 'no light sleep while on USB pow
 # regression 2026-11-14: rapid install/remove while the screen slides used to hang LVGL's layout (task watchdog)
 stress_ok = 0
 for trial in range(3):
-    for n in ('r1', 'r2', 'r3', 'r4'): push(n, f"function start() w.title('{n}') end")
+    t_round = time.time()
+    ends = [(n, push(n, f"function start() w.title('{n}') end"), round(time.time() - t_round, 1)) for n in ('r1', 'r2', 'r3', 'r4')]
     ember.ask(s, 'app run r4', 'CMD app run', 5, sink=[])
     rs = [ember.ask(s, f'app rm {n}', 'CMD app rm', 6) for n in ('r1', 'r2', 'r3', 'r4')]
     good = all(r and r.endswith('ok') for r in rs) and ember.ask(s, 'pwr', 'CMD pwr', 4) is not None
     stress_ok += good
-    if not good: print('   stress round', trial, 'replies:', rs)
+    if not good: print('   stress round', trial, 'installs:', ends, 'removes:', rs)
 check(stress_ok == 3, 'rapid app install/remove during screen animations never hangs the UI', f'{stress_ok}/3 rounds')
 
 rm_replies = {n: ember.ask(s, f'app rm {n}', 'CMD app rm', 6) for n in ('t_api', 't_loop', 't_bad', 't_mem', 't_tmr')}

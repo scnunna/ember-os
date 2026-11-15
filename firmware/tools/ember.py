@@ -48,6 +48,8 @@ def ask(s, line, prefix, timeout=4.0, sink=None):
         if l.startswith('EMBER'):
             if sink is not None: sink.append(l)
             else: print(l)
+        elif 'task_wdt' in l or l.startswith('Backtrace') or 'Guru' in l:
+            print('WATCH:', l[:200])            # the watchdog's report about a stuck task: always show it
     return None
 
 

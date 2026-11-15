@@ -29,7 +29,8 @@ static const char *TAG = "link";
 #define MAX_MSG 4096
 
 // eb3f00NN-6d62-4f53-8a1e-656d6265720a, little-endian for NimBLE
-#define LUUID(n) {0x0a, 0x72, 0x65, 0x62, 0x6d, 0x65, 0x1e, 0x8a, 0x53, 0x4f, 0x62, 0x6d, (n), 0x00, 0x3f, 0xeb}
+// NO braces: BLE_UUID128_INIT adds them. With braces only the first byte was kept (found by the real-radio test).
+#define LUUID(n) 0x0a, 0x72, 0x65, 0x62, 0x6d, 0x65, 0x1e, 0x8a, 0x53, 0x4f, 0x62, 0x6d, (n), 0x00, 0x3f, 0xeb
 const ble_uuid128_t LINK_UUID_SVC = BLE_UUID128_INIT(LUUID(0x01));
 const ble_uuid128_t LINK_UUID_CMD = BLE_UUID128_INIT(LUUID(0x02));
 const ble_uuid128_t LINK_UUID_EVT = BLE_UUID128_INIT(LUUID(0x03));
@@ -142,16 +143,25 @@ static void tx_task(void *a)
 void link_on_connect(uint16_t conn) { s_conn = conn; s_evt_sub_raw = s_audio_sub_raw = s_secure = false; s_asm_len = -1; }
 void link_on_disconnect(void) { s_conn = BLE_HS_CONN_HANDLE_NONE; s_evt_sub_raw = s_audio_sub_raw = s_secure = false; link_ptt_stop(); }
 static volatile bool s_hello_due;
+static char s_wake;                             // queued as a pointer to wake link_task immediately (not a message)
+static void hello_now(void)
+{
+    s_hello_due = true;
+    char *w = &s_wake;
+    xQueueSend(s_rxq, &w, 0);                   // without this, hello waited for the next message (up to 30 s)
+}
 void link_on_subscribe(uint16_t attr, bool notify)
 {
     // a subscription on an insecure link is remembered but nothing is sent until the link is secure
-    if (attr == link_evt_handle) { s_evt_sub_raw = notify; if (notify && s_secure) s_hello_due = true; }
+    if (attr == link_evt_handle) { s_evt_sub_raw = notify; if (notify && s_secure) hello_now(); }
     if (attr == link_audio_handle) s_audio_sub_raw = notify;
+    ESP_LOGI(TAG, "subscribe attr=%u notify=%d (evt=%u audio=%u) secure=%d", attr, notify, link_evt_handle, link_audio_handle, s_secure);
 }
 void link_on_secure(bool secure)
 {
+    ESP_LOGI(TAG, "secure=%d evt_sub=%d", secure, s_evt_sub_raw);
     s_secure = secure;
-    if (secure && s_evt_sub_raw) s_hello_due = true;
+    if (secure && s_evt_sub_raw) hello_now();
 }
 
 // ------------------------------------------------------------------ notifications store
@@ -443,6 +453,7 @@ static void handle(const char *json, bool trusted)
         snprintf(s_weather.text, sizeof(s_weather.text), "%d\xC2\xB0" "C  %s", get_int(m, "temp", 0), txt);
         s_weather.at = esp_timer_get_time();
     } else if (!strcmp(t, "steps_req")) link_send_steps();
+    else if (!strcmp(t, "hello_req")) send_hello();
     else if (!strcmp(t, "recs_req")) send_recs();
     else if (!strcmp(t, "wifi_req")) {
         if (!allowed(trusted, "Phone wants to turn on the Wi-Fi hotspot\n(to download recordings). Allow?")) goto done;
@@ -523,8 +534,14 @@ static void link_task(void *a)
     int64_t last_steps = 0;
     while (1) {
         char *msg;
-        if (xQueueReceive(s_rxq, &msg, pdMS_TO_TICKS(30000)) == pdTRUE) { handle(msg + 1, msg[0] == 'U'); free(msg); }
-        if (s_hello_due) { s_hello_due = false; send_hello(); link_send_steps(); last_steps = esp_timer_get_time(); }
+        if (xQueueReceive(s_rxq, &msg, pdMS_TO_TICKS(30000)) == pdTRUE && msg != &s_wake) { handle(msg + 1, msg[0] == 'U'); free(msg); }
+        if (s_hello_due) {
+            // A bonded phone's subscription is restored by NimBLE the instant encryption comes up - before the
+            // phone app is actually listening. Wait a moment so the hello isn't lost (the phone can also send hello_req).
+            vTaskDelay(pdMS_TO_TICKS(1200));
+            s_hello_due = false;
+            if (link_ready()) { send_hello(); link_send_steps(); last_steps = esp_timer_get_time(); }
+        }
         if (link_ready() && esp_timer_get_time() - last_steps > 3600LL * 1000000) { last_steps = esp_timer_get_time(); link_send_steps(); }
     }
 }
