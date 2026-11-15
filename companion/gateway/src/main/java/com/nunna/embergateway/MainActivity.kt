@@ -111,6 +111,21 @@ private fun LogTab() {
     val audit by GatewayStore.audit.collectAsState()
     val df = remember { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM) }
     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        var crashText by remember { mutableStateOf(GatewayStore.crash.read()) }
+        if (crashText.isNotBlank()) Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Ember Gateway had a problem. Tap Copy and paste it to Claude (nothing is sent).", style = MaterialTheme.typography.titleSmall)
+                Text(crashText.takeLast(1200), style = MaterialTheme.typography.bodySmall, maxLines = 14)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("Ember Gateway crash log", crashText))
+                    }) { Text("Copy") }
+                    OutlinedButton(onClick = { GatewayStore.crash.clear(); crashText = "" }) { Text("Clear") }
+                }
+            }
+        }
         Text("Every request, newest first. The log is encrypted on this phone.")
         if (audit.isEmpty()) Text("No requests yet.")
         audit.forEach { e ->

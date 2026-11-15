@@ -9,6 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
@@ -65,4 +66,26 @@ fun ConfirmDialog() {
         confirmButton = { TextButton(onClick = { pending.answer.complete(true) }) { Text("Yes, do it") } },
         dismissButton = { TextButton(onClick = { pending.answer.complete(false) }) { Text("No") } },
     )
+}
+
+/** Shows the on-phone crash log (if any) with Copy / Clear, so the owner can paste it to whoever fixes the app. */
+@Composable
+fun CrashCard() {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var text by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(com.nunna.embercompanion.crashLog.read()) }
+    if (text.isBlank()) return
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("The app had a problem", style = MaterialTheme.typography.titleMedium)
+            Text("Tap Copy and paste it to Claude. It stays on this phone; nothing is sent.", style = MaterialTheme.typography.bodySmall)
+            Text(text.takeLast(1200), style = MaterialTheme.typography.bodySmall, maxLines = 14)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("Ember crash log", text))
+                }) { Text("Copy") }
+                OutlinedButton(onClick = { com.nunna.embercompanion.crashLog.clear(); text = "" }) { Text("Clear") }
+            }
+        }
+    }
 }

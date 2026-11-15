@@ -65,6 +65,7 @@ fun HomeScreen(go: (Screen) -> Unit) {
     }
 
     Page("Ember Companion", null) {
+        CrashCard()
         if (ringing) Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
             Row(Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("Your phone is ringing (the watch asked).", Modifier.weight(1f))

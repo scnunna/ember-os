@@ -6,9 +6,13 @@ import android.os.Bundle
 import android.widget.TextView
 import com.nunna.embercompanion.android.AppGraph
 
+/** Crash log of this app (see CrashLog); set before anything else starts. */
+lateinit var crashLog: com.nunna.embershared.CrashLog
+
 class EmberApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        crashLog = com.nunna.embershared.CrashLog(java.io.File(filesDir, "crash.txt")).also { it.install() }
         AppGraph.init(this)
     }
 }

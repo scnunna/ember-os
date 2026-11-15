@@ -40,10 +40,14 @@ object GatewayStore {
 
     private const val SEP = '|'
 
+    /** On-phone crash log, shown on the Log tab with Copy. */
+    lateinit var crash: com.nunna.embershared.CrashLog
+
     @Synchronized
     fun init(context: Context) {
         if (ready) return
         ctx = context.applicationContext
+        crash = com.nunna.embershared.CrashLog(File(ctx.filesDir, "crash.txt")).also { it.install() }
         box = AesGcmBox { keystoreKey() }
         auditFile = File(ctx.filesDir, "audit.bin")
         _audit.value = runCatching { AuditLog.decode(box.decryptString(auditFile.readBytes(), "audit")) }.getOrDefault(emptyList())

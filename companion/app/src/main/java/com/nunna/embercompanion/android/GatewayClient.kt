@@ -88,7 +88,9 @@ class GatewayClient(private val ctx: Context) : GatewayApi, LifeOsApi, AmberApi 
         try {
             server = withTimeoutOrNull(10_000) { connected.await() } ?: return GatewayResult(false, Contract.IO_ERROR, "Gateway did not start", null, 0)
             server.send(Message.obtain(null, what).also { it.data = data; it.replyTo = reply })
-            return done.await()
+            // a Gateway that never answers must not block the caller forever (downloads report progress meanwhile)
+            return withTimeoutOrNull(if (what == Contract.MSG_DOWNLOAD_MODEL || what == Contract.MSG_FETCH_WATCH) 30 * 60_000L else 90_000L) { done.await() }
+                ?: GatewayResult(false, Contract.IO_ERROR, "Gateway did not answer", null, 0)
         } catch (e: CancellationException) {
             runCatching { server?.send(Message.obtain(null, Contract.MSG_CANCEL).also { it.data = Bundle().apply { putString(Contract.K_ID, id) } }) }
             throw e

@@ -67,7 +67,12 @@ object AppGraph {
     /** The speech model the user picked (tiny by default). */
     val models: ModelStore get() = sttStores.getValue(prefs.sttModelId)
 
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // A failing background job (one message, one Gateway call) is logged instead of killing the app, which would also
+    // drop the Bluetooth link to the watch.
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
+        android.util.Log.e("EmberApp", "background job failed", e)
+        runCatching { com.nunna.embercompanion.crashLog.record("CAUGHT", e) }
+    })
     private var started = false
 
     val recs = MutableStateFlow<List<Message.RecFile>>(emptyList())

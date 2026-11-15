@@ -29,7 +29,10 @@ import java.util.UUID
  * Every request is classified by [GatewayPolicy], logged, and either run, sent to the approval screen, or refused.
  */
 class GatewayService : Service() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
+        android.util.Log.e("EmberGateway", "request failed", e)
+        runCatching { GatewayStore.crash.record("CAUGHT", e) }
+    })
     private val jobs = HashMap<String, Job>()
     private lateinit var messenger: Messenger
 
