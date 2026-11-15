@@ -18,6 +18,26 @@ class LifeOsTest {
         assertTrue(decide(LifeOsPolicy.checkinsUrl(base), "POST") is Decision.Auto)
     }
 
+    @Test fun handoffLinkFromLifeOs() {
+        val b = java.net.URLEncoder.encode("https://lifeos.example-tailnet.ts.net:8410", "UTF-8")
+        val ok = LifeOsPolicy.parseHandoff("embergateway://lifeos-link?base=$b&token=$tok")
+        assertEquals("https://lifeos.example-tailnet.ts.net:8410", ok!!.base)
+        assertEquals(tok, ok.token)
+        assertNotNull(LifeOsPolicy.parseHandoff("embergateway://lifeos-link?token=$tok&base=$b"))
+        for (bad in listOf(
+            "embergateway://lifeos-link?base=${java.net.URLEncoder.encode("https://evil.example.com", "UTF-8")}&token=$tok",
+            "embergateway://lifeos-link?base=${java.net.URLEncoder.encode("http://lifeos.example-tailnet.ts.net", "UTF-8")}&token=$tok",
+            "embergateway://lifeos-link?base=$b&token=lw_short",
+            "embergateway://lifeos-link?base=$b&token=$tok&extra=1",
+            "embergateway://lifeos-link?base=$b",
+            "embergateway://other?base=$b&token=$tok",
+            "https://lifeos-link?base=$b&token=$tok",
+            "embergateway://lifeos-link/x?base=$b&token=$tok",
+            "embergateway://lifeos-link?base=$b&token=$tok#f",
+            "not a uri",
+        )) assertNull(bad, LifeOsPolicy.parseHandoff(bad))
+    }
+
     @Test fun otherHostsAreDenied() {
         for (u in listOf(
             "https://evil.example.com/api/watch/checkins", "https://other.tail1234.ts.net/api/watch/checkins",

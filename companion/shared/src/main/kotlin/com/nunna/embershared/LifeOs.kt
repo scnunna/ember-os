@@ -44,6 +44,20 @@ object LifeOsPolicy {
         return if (validToken(token.trim())) LifeOsConfig(b, token.trim()) else null
     }
 
+    /**
+     * One-tap handoff from the Life OS page on this phone: embergateway://lifeos-link?base=<urlencoded>&token=lw_...
+     * Returns the config only if the link is exactly that shape and both parts are valid. The Gateway never saves it
+     * by itself: it shows the host and waits for the owner's Save tap.
+     */
+    fun parseHandoff(uri: String): LifeOsConfig? = runCatching {
+        val u = URI(uri.trim())
+        if (u.scheme != "embergateway" || u.host != "lifeos-link" || !(u.rawPath.isNullOrEmpty() || u.rawPath == "/") || u.rawFragment != null) return null
+        val params = (u.rawQuery ?: return null).split('&').map { it.split('=', limit = 2) }
+        if (params.any { it.size != 2 } || params.map { it[0] }.sorted() != listOf("base", "token")) return null
+        val m = params.associate { it[0] to java.net.URLDecoder.decode(it[1], "UTF-8") }
+        config(m.getValue("base"), m.getValue("token"))
+    }.getOrNull()
+
     fun todayUrl(base: String, date: String, tzMinutes: Int): String = "$base$TODAY_PATH?date=$date&tz=$tzMinutes"
     fun checkinsUrl(base: String): String = "$base$CHECKINS_PATH"
     fun amberUrl(base: String): String = "$base$AMBER_PATH"

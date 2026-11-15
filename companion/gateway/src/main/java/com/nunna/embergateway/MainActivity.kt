@@ -27,12 +27,24 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         startTab.intValue = intent.getIntExtra("tab", 0).coerceIn(0, 2)
+        takeHandoff(intent)
+    }
+
+    // A Life OS link handed over from the browser: kept in memory only until the owner taps Save or Ignore.
+    private fun takeHandoff(intent: android.content.Intent?) {
+        val data = intent?.data?.toString() ?: return
+        if (intent.action != android.content.Intent.ACTION_VIEW) return
+        pendingHandoff.value = com.nunna.embershared.LifeOsPolicy.parseHandoff(data)
+        handoffInvalid.value = pendingHandoff.value == null
+        startTab.intValue = 2
+        intent.data = null                          // don't re-read it after a rotation
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         GatewayStore.init(this)
         startTab.intValue = intent?.getIntExtra("tab", 0)?.coerceIn(0, 2) ?: 0
+        takeHandoff(intent)
         setContent {
             MaterialTheme(colorScheme = if (androidx.compose.foundation.isSystemInDarkTheme()) darkColorScheme(primary = Color(0xFF3A86FF)) else lightColorScheme(primary = Color(0xFF3A86FF))) {
                 Surface(Modifier.fillMaxSize()) { GatewayApp(startTab.intValue) }
@@ -112,13 +124,33 @@ private fun LogTab() {
     }
 }
 
+private val pendingHandoff = kotlinx.coroutines.flow.MutableStateFlow<com.nunna.embershared.LifeOsConfig?>(null)
+private val handoffInvalid = kotlinx.coroutines.flow.MutableStateFlow(false)
+
 @Composable
 private fun LifeOsTab() {
     val cfg by GatewayStore.lifeOs.collectAsState()
     var url by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf<String?>(null) }
+    val handoff by pendingHandoff.collectAsState()
+    val invalid by handoffInvalid.collectAsState()
     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (invalid) Card { Text("A link tried to set up Life OS but it was not valid, so it was ignored.", Modifier.padding(12.dp)) }
+        handoff?.let { h ->
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Connect to this Life OS?", style = MaterialTheme.typography.titleMedium)
+                    Text(h.host + (h.base.substringAfter(h.host, "")), fontFamily = FontFamily.Monospace)
+                    if (cfg != null && cfg!!.base != h.base) Text("This REPLACES the current link (${cfg!!.host}).", color = MaterialTheme.colorScheme.error)
+                    Text("Only save it if you just tapped \"Send to Ember Gateway\" in your own Life OS.", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { msg = if (GatewayStore.setLifeOs(h.base, h.token)) "Saved (encrypted)." else "Could not save."; pendingHandoff.value = null }) { Text("Save") }
+                        OutlinedButton(onClick = { pendingHandoff.value = null; msg = "Ignored." }) { Text("Ignore") }
+                    }
+                }
+            }
+        }
         Text("Life OS link: lets the watch check-ins sync with Life OS on your laptop. Only your own tailnet address is accepted (https, ending in .ts.net, port allowed).")
         Text(if (cfg != null) "Configured: ${cfg!!.host}" else "Not configured.", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text("Base URL, e.g. https://host.tailnet.ts.net:8410") }, singleLine = true, modifier = Modifier.fillMaxWidth())

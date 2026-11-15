@@ -28,6 +28,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- One-tap handoff from the Life OS page (Settings > Watch). Never saved without the owner's Save tap. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="embergateway" android:host="lifeos-link" />
+            </intent-filter>
         </activity>
 
         <service
