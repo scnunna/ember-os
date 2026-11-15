@@ -1,6 +1,5 @@
 package com.nunna.embershared
 
-import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
@@ -10,12 +9,14 @@ import javax.crypto.spec.GCMParameterSpec
  * it is an AndroidKeyStore key that never leaves secure hardware/keystore, in tests it is an in-memory key.
  */
 class AesGcmBox(private val key: () -> SecretKey) {
-    private val rnd = SecureRandom()
 
     fun encrypt(plain: ByteArray, aad: ByteArray = ByteArray(0)): ByteArray {
-        val iv = ByteArray(12).also { rnd.nextBytes(it) }
+        // The cipher picks the random 12-byte IV itself. Android Keystore keys REQUIRE this ("Caller-provided IV not
+        // permitted": randomized encryption is enforced), and the plain JCE does the same, so one code path fits both.
         val c = Cipher.getInstance("AES/GCM/NoPadding")
-        c.init(Cipher.ENCRYPT_MODE, key(), GCMParameterSpec(128, iv))
+        c.init(Cipher.ENCRYPT_MODE, key())
+        val iv = c.iv
+        check(iv != null && iv.size == 12) { "unexpected GCM IV" }
         if (aad.isNotEmpty()) c.updateAAD(aad)
         return iv + c.doFinal(plain)
     }
