@@ -23,7 +23,10 @@ data class WatchInfo(val fw: String, val name: String, val batt: Int, val mv: In
 data class TrLanguages(val me: String, val them: String)
 
 /** A finished push-to-talk recording from the watch. */
-class PttClip(val side: String, val rate: Int, private val stream: AdpcmStream) {
+class PttClip(val side: String, val rate: Int, private val stream: AdpcmStream, val expectedBlocks: Int = -1) {
+    /** True when every block the watch said it sent has arrived (or was counted lost). */
+    val complete: Boolean get() = expectedBlocks < 0 || stream.goodBlocks >= expectedBlocks
+
     /** Read these after a short delay: AUDIO and EVT are separate characteristics, so the last blocks can land just after `ptt off`. */
     val samples: ShortArray get() = stream.samples()
     val lostBlocks: Int get() = stream.lostBlocks
@@ -64,8 +67,12 @@ class LinkController(
 
     @Synchronized fun onConnecting() { _phase.value = LinkPhase.CONNECTING }
 
-    /** GATT connected, MTU negotiated, EVT and AUDIO subscribed. */
-    @Synchronized fun onReady(mtu: Int) {
+    /**
+     * GATT connected, MTU negotiated, EVT and AUDIO subscribed. [secure] must be true only when the link is bonded
+     * (LE Secure Connections + passkey) and encrypted; otherwise nothing is sent at all.
+     */
+    @Synchronized fun onReady(mtu: Int, secure: Boolean = true) {
+        if (!secure) { _phase.value = LinkPhase.CONNECTING; return }
         _mtu.value = mtu
         _phase.value = LinkPhase.CONNECTED
         pttSide = null
@@ -115,7 +122,7 @@ class LinkController(
         } else {
             val side = pttSide ?: return
             pttSide = null
-            onPttClip(PttClip(side, pttRate, audio))
+            onPttClip(PttClip(side, pttRate, audio, p.blocks))
         }
     }
 

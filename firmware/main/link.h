@@ -13,6 +13,7 @@ int  link_noop_access(uint16_t ch, uint16_t ah, struct ble_gatt_access_ctxt *ctx
 void link_on_connect(uint16_t conn);
 void link_on_disconnect(void);
 void link_on_subscribe(uint16_t attr, bool notify);
+void link_on_secure(bool secure);      // link encrypted + authenticated + bonded
 void link_start(void);
 bool link_ready(void);                  // the Ember Companion app is connected and listening
 
@@ -43,4 +44,5 @@ void link_tr_state(char *me, char *them, char *src, size_t srcn, char *dst, size
 
 // ---- self-test hook ----
 int  link_adpcm_selftest(char *hex_out, size_t n);   // encodes the reference test signal, hex of block 1
-void link_inject(const char *json);     // feed a message as if it came from the phone (tests)
+void link_inject(const char *json);     // feed a message as if it came from the phone (tests, trusted)
+void link_inject_untrusted(const char *json);   // same, but treated like the radio (needs on-watch confirmation)

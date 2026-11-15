@@ -6,9 +6,14 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.service.notification.StatusBarNotification
+import com.nunna.embercompanion.assistant.Confirmer
+import com.nunna.embercompanion.assistant.ToolCall
+import com.nunna.embercompanion.assistant.ToolGuard
+import com.nunna.embercompanion.assistant.ToolSpec
 import com.nunna.embercompanion.link.LinkController
 import com.nunna.embercompanion.link.LinkPhase
 import com.nunna.embercompanion.link.PttClip
+import com.nunna.embercompanion.link.RecordingPolicy
 import com.nunna.embercompanion.link.TranslateFlow
 import com.nunna.embercompanion.link.TranslateResult
 import com.nunna.embercompanion.protocol.*
@@ -18,7 +23,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -32,6 +36,9 @@ import java.util.TimeZone
 
 data class RecJob(val stage: String, val percent: Int = 0, val error: String? = null, val done: Boolean = false)
 
+/** A side-effect action waiting for the user's tap (S6). */
+class PendingConfirm(val spec: ToolSpec, val call: ToolCall, val answer: CompletableDeferred<Boolean>)
+
 /** The app-wide brain: one link to the watch plus every feature that reacts to what the watch says. */
 object AppGraph {
     lateinit var app: Context
@@ -40,14 +47,21 @@ object AppGraph {
     lateinit var steps: StepsStore
     lateinit var practice: PracticeStore
     lateinit var notes: NotesStore
-    lateinit var models: ModelStore
+    lateinit var gateway: GatewayClient
+    lateinit var sttStores: Map<String, ModelStore>
+    lateinit var llmModels: LlmModelStore
+    lateinit var llm: LlmRuntime
     lateinit var stt: SherpaStt
     lateinit var link: LinkController
     lateinit var gatt: EmberGatt
     lateinit var ringer: Ringer
-    private lateinit var tts: Tts
-    private lateinit var wifi: WifiFetcher
-    val translator = TranslateEngine()
+    lateinit var translator: Translator
+    lateinit var guard: ToolGuard
+    lateinit var tts: Tts
+        private set
+
+    /** The speech model the user picked (tiny by default). */
+    val models: ModelStore get() = sttStores.getValue(prefs.sttModelId)
 
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var started = false
@@ -62,6 +76,8 @@ object AppGraph {
     val translateBusy = MutableStateFlow(false)
     val lastTranslation = MutableStateFlow<TranslateResult?>(null)
     val pttLive = MutableStateFlow<String?>(null)
+    val confirm = MutableStateFlow<PendingConfirm?>(null)
+    val needsGatewayApproval = MutableStateFlow(false)
 
     private var wifiWait: CompletableDeferred<Message.Wifi>? = null
     private val jobLock = Mutex()
@@ -73,7 +89,13 @@ object AppGraph {
         started = true
         app = context.applicationContext
         prefs = Prefs(app); steps = StepsStore(app); practice = PracticeStore(app); notes = NotesStore(app)
-        models = ModelStore(app); stt = SherpaStt(models); ringer = Ringer(app); tts = Tts(app); wifi = WifiFetcher(app)
+        gateway = GatewayClient(app)
+        sttStores = SpeechModels.all.associate { it.id to ModelStore(app, gateway, it) }
+        llmModels = LlmModelStore(app, gateway) { prefs }
+        llm = LlmRuntime(app) { llmModels.path() }
+        stt = SherpaStt { models }
+        ringer = Ringer(app); tts = Tts(app)
+        translator = LlmTranslator(llm)
         link = LinkController(
             transport = object : com.nunna.embercompanion.link.LinkTransport {
                 override fun write(packets: List<ByteArray>) = gatt.write(packets)
@@ -89,10 +111,37 @@ object AppGraph {
             speak = { t, lang -> tts.speak(t, lang) },
             send = { link.send(it) },
         )
+        guard = ToolGuard(buildTools(), Confirmer { spec, call -> askUser(spec, call) })
         link.onMessage = { m -> scope.launch { handle(m) } }
         link.onPttClip = { clip -> scope.launch { handleClip(clip) } }
         link.onReadyHook = { scope.launch { delay(300); link.send(Message.AppLs); link.send(Message.RecsReq) } }
+        scope.launch { purgeOldAudio() }
     }
+
+    // ---------------------------------------------------------------- S6: tools that change things always ask
+
+    private suspend fun askUser(spec: ToolSpec, call: ToolCall): Boolean {
+        val p = PendingConfirm(spec, call, CompletableDeferred())
+        confirm.value = p
+        val ok = withTimeoutOrNull(120_000) { p.answer.await() } ?: false
+        confirm.value = null
+        return ok
+    }
+
+    private fun buildTools(): List<ToolSpec> = listOf(
+        ToolSpec("list_notes", "List saved meeting notes", false) { notes.notes.value.joinToString("\n") { "${it.id}: ${it.title}" } },
+        ToolSpec("send_reply", "Send a quick reply to a notification", true) { a ->
+            NotifBridge.reply(app, a["id"]?.toIntOrNull() ?: error("no id"), a["idx"]?.toIntOrNull() ?: 0); "sent"
+        },
+        ToolSpec("delete_note", "Delete a saved note", true) { a -> notes.delete(a["id"] ?: error("no id")); "deleted" },
+        ToolSpec("send_note_to_watch", "Send a note summary to the watch", true) { a ->
+            sendNote(notes.get(a["id"] ?: error("no id")) ?: error("no such note")); "sent"
+        },
+        ToolSpec("install_app", "Install a bundled app on the watch", true) { a ->
+            val e = LuaCatalog.entries.firstOrNull { it.name == a["name"] } ?: error("no such app")
+            AppUpload.messages(e.name, app.assets.open(e.assetPath).use { it.readBytes() }).forEach { link.send(it) }; "sent"
+        },
+    )
 
     // ---------------------------------------------------------------- watch -> phone
 
@@ -109,7 +158,10 @@ object AppGraph {
             is Message.Apps -> { watchApps.value = m.list; appStatus.value = null }
             is Message.AppOk -> { appStatus.value = "Installed ${m.name} on the watch."; link.send(Message.AppLs) }
             is Message.Err -> {
-                watchError.value = "${Errors.WATCH_ERR}: ${m.msg}. Try again; if it keeps happening, restart the watch."
+                val denied = m.msg.contains("denied", true)
+                if (m.re == "wifi_req") wifiWait?.complete(Message.Wifi("", "", "", m.msg.ifBlank { "denied on watch" }))
+                watchError.value = if (denied) "WA-02: You did not tap Allow on the watch in time (${m.re.ifBlank { "request" }}). Try again and tap Allow on the watch."
+                else "${Errors.WATCH_ERR}${if (m.re.isNotBlank()) " (${m.re})" else ""}: ${m.msg}. Try again; if it keeps happening, restart the watch."
                 if (appStatus.value?.startsWith("Sending") == true) appStatus.value = watchError.value
             }
             is Message.Ptt -> pttLive.value = if (m.on) m.side else null
@@ -120,9 +172,10 @@ object AppGraph {
     fun stopRinging() { ringer.stop(); ringing.value = false }
 
     private suspend fun handleClip(clip: PttClip) {
-        delay(400) // let the last AUDIO packets arrive
-        val samples = clip.samples
-        val f = Resampler.toFloat(samples, clip.rate, 16000)
+        // Wait until every block the watch said it sent has arrived, but never more than ~400 ms.
+        var waited = 0
+        while (!clip.complete && waited < 400) { delay(20); waited += 20 }
+        val f = Resampler.toFloat(clip.samples, clip.rate, 16000)
         runTranslation(clip.side, f)
     }
 
@@ -146,6 +199,16 @@ object AppGraph {
 
     private fun setJob(name: String, j: RecJob) = recJobs.update { it + (name to j) }
 
+    /** Deletes kept recordings that are past the retention choice (and any leftovers when the choice is "delete"). */
+    private fun purgeOldAudio() {
+        val dir = File(app.filesDir, "recs")
+        val now = System.currentTimeMillis()
+        dir.listFiles()?.forEach { f ->
+            if (f.name.endsWith(".part")) f.delete()
+            else if (RecordingPolicy.expired(f.lastModified(), now, prefs.keepAudioDays.coerceAtLeast(2))) f.delete() // a failed note keeps its audio 2 days so it can be retried
+        }
+    }
+
     /** Download (if needed), transcribe, summarize and save one recording as a note. */
     fun processRecording(rec: Message.RecFile) {
         scope.launch {
@@ -154,7 +217,7 @@ object AppGraph {
                 try {
                     if (!stt.ready) { setJob(name, RecJob("", error = Errors.STT_MODEL)); return@withLock }
                     val file = recFile(name)
-                    if (!file.exists()) download(name, file)
+                    if (!file.exists()) download(rec, file)
                     setJob(name, RecJob("Reading the recording"))
                     val wav = withContext(Dispatchers.IO) { WavReader.read(file.readBytes()) }
                     val audio = Resampler.toFloat(wav.samples, wav.sampleRate, 16000)
@@ -166,13 +229,13 @@ object AppGraph {
                     if (segs.isEmpty()) { setJob(name, RecJob("", error = "ST-04: No speech was found in this recording. Check the watch microphone and try a new recording.")); return@withLock }
                     setJob(name, RecJob("Writing the summary"))
                     val text = segs.joinToString(" ") { it.text }
-                    val llmPath = prefs.llmModelPath?.takeIf { File(it).exists() }
-                    val summarizer: Summarizer = if (llmPath != null) LlmSummarizer(app, llmPath) else ExtractiveSummarizer()
+                    val summarizer: Summarizer = if (llmModels.path() != null) LlmSummarizer(llm) else ExtractiveSummarizer()
                     val sum = summarizer.summarize(text)
                     val note = NoteRecord(name, sum.title, System.currentTimeMillis(), segs, rec.marks, sum.summary, sum.actions, sum.engine)
                     notes.save(note)
-                    val llmErr = (summarizer as? LlmSummarizer)?.lastError
-                    setJob(name, RecJob("Done", 100, error = llmErr, done = true))
+                    // S7: raw audio is deleted once it has been turned into text (unless the user chose to keep it for a few days).
+                    if (RecordingPolicy.deleteAfterTranscription(prefs.keepAudioDays)) file.delete()
+                    setJob(name, RecJob("Done", 100, error = (summarizer as? LlmSummarizer)?.lastError, done = true))
                 } catch (e: Exception) {
                     setJob(name, RecJob("", error = userMessage(e.message, Errors.STT_FAIL)))
                 }
@@ -180,16 +243,39 @@ object AppGraph {
         }
     }
 
-    private suspend fun download(name: String, dest: File) {
+    private suspend fun download(rec: Message.RecFile, dest: File) {
+        val name = rec.n
         val wait = CompletableDeferred<Message.Wifi>()
         wifiWait = wait
         try {
-            setJob(name, RecJob("Asking the watch to start Wi-Fi"))
+            setJob(name, RecJob("Asking the watch to start Wi-Fi (tap Allow on the watch)"))
             link.send(Message.WifiReq)
-            val w = withTimeoutOrNull(20_000) { wait.await() } ?: throw IllegalStateException(Errors.WIFI_WATCH)
-            if (w.err != null || w.ssid.isBlank()) throw IllegalStateException(Errors.WIFI_WATCH)
+            val w = withTimeoutOrNull(45_000) { wait.await() } ?: throw IllegalStateException(Errors.WIFI_WATCH)
+            if (w.err != null || w.ssid.isBlank() || w.token.isBlank()) throw IllegalStateException(Errors.WIFI_WATCH)
             setJob(name, RecJob("Joining the watch Wi-Fi"))
-            wifi.download(w.ssid, w.pass, w.ip.ifBlank { "192.168.4.1" }, name, dest) { p -> setJob(name, RecJob("Downloading", p)) }
+            val r = gateway.fetchWatchFile(
+                w.ssid, w.pass, w.ip.ifBlank { "192.168.4.1" }, name, w.token, rec.s, "Recording $name",
+                onProgress = { p -> setJob(name, RecJob("Downloading", p)) }, onNeedsApproval = {},
+            )
+            if (!r.ok || r.uri == null) throw IllegalStateException(r.userMessage())
+            withContext(Dispatchers.IO) {
+                dest.parentFile?.mkdirs()
+                val tmp = File(dest.path + ".part")
+                try {
+                    val input = gateway.open(r.uri) ?: throw IllegalStateException(Errors.GW_FAIL)
+                    input.use { i -> tmp.outputStream().use { o -> i.copyTo(o) } }
+                    // Only a complete file counts: the size must match what the watch listed.
+                    if (!RecordingPolicy.verify(rec.s, tmp.length())) throw IllegalStateException(Errors.WIFI_SIZE)
+                    dest.delete()
+                    if (!tmp.renameTo(dest)) throw IllegalStateException(Errors.GW_FAIL)
+                } finally {
+                    tmp.delete()
+                    gateway.delete(r.uri)
+                }
+            }
+            link.send(Message.WifiOff)
+            // Verified: let the watch delete its copy (it checks the size too).
+            RecordingPolicy.recDel(rec, dest.length(), prefs.deleteFromWatch)?.let { link.send(it) }
         } finally {
             wifiWait = null
             link.send(Message.WifiOff)

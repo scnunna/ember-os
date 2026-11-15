@@ -23,7 +23,7 @@
 static const char *TAG = "wifi";
 static bool s_active, s_inited;
 static httpd_handle_t s_httpd;
-static char s_ssid[24], s_pass[12];
+static char s_ssid[24], s_pass[13];
 static esp_netif_t *s_netif;
 static volatile int64_t s_last_req;
 
@@ -50,30 +50,53 @@ static const char PAGE[] =
 "<div class=c><b>Ember apps</b><div id=ap class=s>loading...</div>"
 "<p class=s>Install a .lua app: <input type=file id=af accept='.lua'> <button onclick=up()>Install</button> <span id=au></span></p></div>"
 "<script>"
-"async function ap(){let r=await(await fetch('/api/apps')).json();let h='';"
+"const K=new URLSearchParams(location.search).get('k')||'';"
+"function F(u,o){return fetch(u+(u.indexOf('?')<0?'?':'&')+'k='+K,o)}"
+"async function ap(){let r=await(await F('/api/apps')).json();let h='';"
 "for(const n of r){h+='<div class=f><span>'+n+'</span><button class=d onclick=\"arm(\\''+n+'\\')\">Remove</button></div>'}"
 "document.getElementById('ap').innerHTML=h||'none'}"
-"async function arm(n){if(!confirm('Remove '+n+'?'))return;await fetch('/api/apprm?name='+n,{method:'POST'});ap()}"
+"async function arm(n){if(!confirm('Remove '+n+'?'))return;await F('/api/apprm?name='+n,{method:'POST'});ap()}"
 "async function up(){let f=document.getElementById('af').files[0];if(!f)return;let n=f.name.replace(/\\.lua$/i,'').toLowerCase();"
-"let r=await fetch('/api/app?name='+encodeURIComponent(n),{method:'POST',body:await f.text()});"
+"let r=await F('/api/app?name='+encodeURIComponent(n),{method:'POST',body:await f.text()});"
 "document.getElementById('au').textContent=await r.text();ap()}"
 "ap();"
-"async function st(){let r=await(await fetch('/api/status')).json();"
+"async function st(){let r=await(await F('/api/status')).json();"
 "document.getElementById('st').innerHTML='Time '+r.time+'<br>Steps today <b>'+r.steps+'</b><br>Battery '+(r.batt<0?'none':r.batt+'%')+'<br>Storage '+r.store+' - '+r.free_mb+' MB free'}"
-"async function fl(){let r=await(await fetch('/api/files')).json();let h='';"
+"async function fl(){let r=await(await F('/api/files')).json();let h='';"
 "for(const f of r){h+='<div class=f><span>'+f.n+'<br><span class=s>'+(f.s/1048576).toFixed(1)+' MB</span></span><span>"
-"<a href=\"/f/'+f.n+'\" download>Save</a> <button class=d onclick=\"del(\\''+f.n+'\\')\">Delete</button></span></div>'}"
+"<a href=\"/f/'+f.n+'?k='+K+'\" download>Save</a> <button class=d onclick=\"del(\\''+f.n+'\\')\">Delete</button></span></div>'}"
 "document.getElementById('fl').innerHTML=h||'none yet'}"
-"async function del(n){if(!confirm('Delete '+n+'?'))return;await fetch('/api/del?name='+encodeURIComponent(n),{method:'POST'});fl()}"
+"async function del(n){if(!confirm('Delete '+n+'?'))return;await F('/api/del?name='+encodeURIComponent(n),{method:'POST'});fl()}"
 "async function sync(){let d=new Date();let q='y='+d.getFullYear()+'&mo='+(d.getMonth()+1)+'&d='+d.getDate()+'&h='+d.getHours()+'&mi='+d.getMinutes()+'&s='+d.getSeconds();"
-"await fetch('/api/time?'+q,{method:'POST'});document.getElementById('sy').textContent='done';st()}"
+"await F('/api/time?'+q,{method:'POST'});document.getElementById('sy').textContent='done';st()}"
 "st();fl();setInterval(st,5000)</script></body></html>";
 
 static void touch_req(void) { s_last_req = esp_timer_get_time(); }
 
+// ---- S4: per-session access token; every endpoint checks it (?k=TOKEN or header X-Ember-Key) ----
+static char s_token[17];
+const char *wifi_ap_token(void) { return s_token; }
+static bool authed(httpd_req_t *r)
+{
+    char q[160], k[20] = "";
+    if (httpd_req_get_url_query_str(r, q, sizeof(q)) == ESP_OK) httpd_query_key_value(q, "k", k, sizeof(k));
+    if (!k[0]) httpd_req_get_hdr_value_str(r, "X-Ember-Key", k, sizeof(k));
+    bool ok = s_token[0] && strlen(k) == 16 && !strcmp(k, s_token);
+    if (!ok) { httpd_resp_set_status(r, "403 Forbidden"); httpd_resp_sendstr(r, "403: missing or wrong access key (see the watch screen)"); }
+    return ok;
+}
+#define AUTH() do { if (!authed(r)) return ESP_OK; } while (0)
+static void random_hex(char *out, int n)
+{
+    static const char H[] = "0123456789abcdef";
+    for (int i = 0; i < n; i++) out[i] = H[esp_random() & 15];
+    out[n] = 0;
+}
+
 static esp_err_t h_root(httpd_req_t *r)
 {
     touch_req();
+    AUTH();
     httpd_resp_set_type(r, "text/html");
     return httpd_resp_send(r, PAGE, HTTPD_RESP_USE_STRLEN);
 }
@@ -81,6 +104,7 @@ static esp_err_t h_root(httpd_req_t *r)
 static esp_err_t h_status(httpd_req_t *r)
 {
     touch_req();
+    AUTH();
     char b[256]; struct tm t; batt_t bt; uint64_t tot, fre;
     hw_batt(&bt); hw_storage_info(&tot, &fre);
     char ts[24] = "unset";
@@ -102,6 +126,7 @@ static bool safe_name(const char *n)
 static esp_err_t h_files(httpd_req_t *r)
 {
     touch_req();
+    AUTH();
     httpd_resp_set_type(r, "application/json");
     char dir[48];
     snprintf(dir, sizeof(dir), "%s/rec", hw_storage_root());
@@ -127,6 +152,7 @@ static esp_err_t h_files(httpd_req_t *r)
 static esp_err_t h_download(httpd_req_t *r)
 {
     touch_req();
+    AUTH();
     const char *name = r->uri + 3;                      // after "/f/"
     if (!safe_name(name)) return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "bad name");
     char path[128];
@@ -155,6 +181,7 @@ static bool qparam(const char *q, const char *key, char *out, size_t cap)
 static esp_err_t h_del(httpd_req_t *r)
 {
     touch_req();
+    AUTH();
     char q[128], name[64];
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK || !qparam(q, "name", name, sizeof(name)) || !safe_name(name))
         return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "bad name");
@@ -167,6 +194,7 @@ static esp_err_t h_del(httpd_req_t *r)
 static esp_err_t h_time(httpd_req_t *r)
 {
     touch_req();
+    AUTH();
     char q[128], v[8];
     int p[6] = {0};
     const char *k[6] = {"y", "mo", "d", "h", "mi", "s"};
@@ -186,6 +214,7 @@ static esp_err_t h_time(httpd_req_t *r)
 static esp_err_t h_apps(httpd_req_t *r)
 {
     touch_req();
+    AUTH();
     httpd_resp_set_type(r, "application/json");
     httpd_resp_sendstr_chunk(r, "[");
     for (int i = 0; i < script_count(); i++) {
@@ -198,6 +227,7 @@ static esp_err_t h_apps(httpd_req_t *r)
 static esp_err_t h_app_put(httpd_req_t *r)
 {
     touch_req();
+    AUTH();
     char q[96], name[32];
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK || !qparam(q, "name", name, sizeof(name)) || r->content_len > 65536 ||
         !script_put_begin(name))
@@ -215,6 +245,7 @@ static esp_err_t h_app_put(httpd_req_t *r)
 static esp_err_t h_app_rm(httpd_req_t *r)
 {
     touch_req();
+    AUTH();
     char q[96], name[32];
     if (httpd_req_get_url_query_str(r, q, sizeof(q)) != ESP_OK || !qparam(q, "name", name, sizeof(name)) || !script_remove(name))
         return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "no such app");
@@ -278,9 +309,11 @@ void wifi_ap_start(void)
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     snprintf(s_ssid, sizeof(s_ssid), "Watch-%02X%02X", mac[4], mac[5]);
-    int pw = hw_pref_get("appw", 0);
-    if (pw < 10000000) { pw = 10000000 + (int)(esp_random() % 89999999); hw_pref_set("appw", pw); }
-    snprintf(s_pass, sizeof(s_pass), "%d", pw);
+    // S4: a brand-new 12-character password and access token every time the hotspot starts (never stored)
+    static const char A[] = "abcdefghjkmnpqrstuvwxyz23456789";             // no look-alike characters
+    for (int i = 0; i < 12; i++) s_pass[i] = A[esp_random() % (sizeof(A) - 1)];
+    s_pass[12] = 0;
+    random_hex(s_token, 16);
     wifi_config_t wc = {0};
     strcpy((char *)wc.ap.ssid, s_ssid);
     strcpy((char *)wc.ap.password, s_pass);
@@ -302,7 +335,7 @@ void wifi_ap_start(void)
     s_last_req = esp_timer_get_time();
     s_active = true;
     xTaskCreate(idle_task, "wifi_idle", 3072, NULL, 2, NULL);
-    ESP_LOGI(TAG, "AP up: %s / %s  ->  http://192.168.4.1", s_ssid, s_pass);
+    ESP_LOGI(TAG, "AP up: %s (password and key shown on the watch)", s_ssid);
 }
 
 void wifi_ap_stop(void)

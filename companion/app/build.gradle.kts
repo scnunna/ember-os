@@ -52,13 +52,30 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.androidx.health.connect)
-    implementation(libs.mediapipe.genai)
-    implementation(libs.mlkit.translate)
+    implementation(project(":shared"))
+    implementation(libs.litertlm)
     implementation(libs.commons.compress)
     debugImplementation(libs.androidx.compose.ui.tooling)
+    testImplementation(project(":shared"))
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.test.ext.junit)
 }
+
+// S5: the companion must not be able to use the internet. This fails the build if INTERNET shows up in the merged
+// manifest (for example because a library added it).
+val verifyNoInternet = tasks.register("verifyNoInternet") {
+    dependsOn("processDebugMainManifest")
+    val dir = layout.buildDirectory.dir("intermediates/merged_manifests/debug")
+    doLast {
+        val files = fileTree(dir).matching { include("**/AndroidManifest.xml") }.files
+        check(files.isNotEmpty()) { "merged manifest not found" }
+        for (f in files) {
+            val t = f.readText()
+            check(!t.contains("android.permission.INTERNET")) { "S5 violated: INTERNET is in the merged manifest ${f.path}" }
+        }
+    }
+}
+tasks.matching { it.name == "assembleDebug" || it.name == "testDebugUnitTest" }.configureEach { dependsOn(verifyNoInternet) }

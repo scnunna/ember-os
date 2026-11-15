@@ -34,8 +34,9 @@ class MainActivity : ComponentActivity() {
                     var openNote by rememberSaveable { mutableStateOf<String?>(null) }
                     val cur = Screen.valueOf(screen)
                     BackHandler(enabled = cur != Screen.HOME) {
-                        if (cur == Screen.NOTE) screen = Screen.NOTES.name else screen = Screen.HOME.name
+                        screen = when (cur) { Screen.NOTE -> Screen.NOTES.name; Screen.BENCH -> Screen.SETTINGS.name; else -> Screen.HOME.name }
                     }
+                    ConfirmDialog()
                     when (cur) {
                         Screen.HOME -> HomeScreen { screen = it.name }
                         Screen.NOTIFS -> NotifScreen { screen = Screen.HOME.name }
@@ -45,7 +46,8 @@ class MainActivity : ComponentActivity() {
                         Screen.NOTE -> NoteScreen(openNote ?: "") { screen = Screen.NOTES.name }
                         Screen.TRANSLATE -> TranslateScreen { screen = Screen.HOME.name }
                         Screen.PRACTICE -> PracticeScreen { screen = Screen.HOME.name }
-                        Screen.SETTINGS -> SettingsScreen { screen = Screen.HOME.name }
+                        Screen.SETTINGS -> SettingsScreen(go = { screen = it.name }) { screen = Screen.HOME.name }
+                        Screen.BENCH -> BenchScreen { screen = Screen.SETTINGS.name }
                     }
                 }
             }

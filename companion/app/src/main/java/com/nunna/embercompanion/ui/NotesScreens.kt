@@ -20,20 +20,40 @@ import java.text.DateFormat
 import java.util.Date
 
 @Composable
+fun DownloadBlock(state: DownloadState, sizeText: String, onDownload: () -> Unit, onDelete: () -> Unit, doneText: String) {
+    val ctx = LocalContext.current
+    when (val s = state) {
+        is DownloadState.Done -> { Text(doneText); OutlinedButton(onClick = onDelete) { Text("Delete") } }
+        is DownloadState.Running -> { LinearProgressIndicator(progress = { s.percent / 100f }, Modifier.fillMaxWidth()); Text("Downloading ${s.percent}%") }
+        DownloadState.Unpacking -> { LinearProgressIndicator(Modifier.fillMaxWidth()); Text("Saving it on your phone...") }
+        DownloadState.WaitingApproval -> {
+            Text("Waiting for you to approve in Ember Gateway.")
+            Button(onClick = { AppGraph.gateway.openApprovals(ctx) }) { Text("Open Ember Gateway") }
+        }
+        is DownloadState.Failed -> { ErrorText(s.message); Button(onClick = onDownload) { Text("Try again") } }
+        DownloadState.Idle -> Button(onClick = onDownload) { Text("Download ($sizeText)") }
+    }
+}
+
+@Composable
 fun ModelCard() {
     val scope = rememberCoroutineScope()
-    val st by AppGraph.models.state.collectAsState()
-    InfoCard("Speech model: ${SpeechModel.NAME}") {
-        Text("Needed once to turn speech into text. It stays on your phone; nothing is sent anywhere after the download.")
-        when (val s = st) {
-            is DownloadState.Done -> {
-                Text("Ready (uses about ${SpeechModel.DISK_MB} MB).")
-                OutlinedButton(onClick = { AppGraph.models.delete() }) { Text("Delete model") }
-            }
-            is DownloadState.Running -> { LinearProgressIndicator(progress = { s.percent / 100f }, Modifier.fillMaxWidth()); Text("Downloading ${s.percent}%") }
-            is DownloadState.Failed -> { ErrorText(s.message); Button(onClick = { scope.launch { AppGraph.models.download() } }) { Text("Try again") } }
-            DownloadState.Idle -> Button(onClick = { scope.launch { AppGraph.models.download() } }) { Text("Download (${SpeechModel.DOWNLOAD_MB} MB, from GitHub)") }
-        }
+    val store = AppGraph.models
+    val st by store.state.collectAsState()
+    InfoCard("Speech model: ${store.spec.name}") {
+        Text("Needed once to turn speech into text. It downloads through Ember Gateway, which shows you the exact address first. After that it works offline.")
+        DownloadBlock(st, "${store.spec.downloadMb} MB, from GitHub", { scope.launch { store.download() } }, { store.delete() }, "Ready (uses about ${store.spec.diskMb} MB).")
+    }
+}
+
+@Composable
+fun LlmModelCard(why: String) {
+    val scope = rememberCoroutineScope()
+    val st by AppGraph.llmModels.state.collectAsState()
+    InfoCard("AI model: ${LlmModelSpec.NAME}") {
+        Text(why)
+        Text("Licence: ${LlmModelSpec.LICENSE}. Size ${LlmModelSpec.SIZE_BYTES / 1_048_576} MB. It downloads through Ember Gateway from Hugging Face (litert-community).", style = MaterialTheme.typography.bodySmall)
+        DownloadBlock(st, "${LlmModelSpec.SIZE_BYTES / 1_048_576} MB", { scope.launch { AppGraph.llmModels.download() } }, { AppGraph.llmModels.delete() }, "Ready.")
     }
 }
 

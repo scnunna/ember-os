@@ -36,10 +36,12 @@ fun HomeScreen(go: (Screen) -> Unit) {
     val days by AppGraph.steps.days.collectAsState()
     val ringing by AppGraph.ringing.collectAsState()
     val watchErr by AppGraph.watchError.collectAsState()
+    val issue by AppGraph.gatt.issue.collectAsState()
+    val bond by AppGraph.gatt.bond.collectAsState()
     var error by remember { mutableStateOf<String?>(null) }
     var paired by remember { mutableStateOf(AppGraph.prefs.watchAddress != null) }
 
-    fun startLink() { LinkService.start(ctx) }
+    fun startLink() { LinkService.start(ctx, userInitiated = true) }
 
     val chooser = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
         if (Pairing.finish(ctx, r.data)) { paired = true; error = null; startLink() }
@@ -69,7 +71,13 @@ fun HomeScreen(go: (Screen) -> Unit) {
                 Button(onClick = { AppGraph.stopRinging() }) { Text("Stop") }
             }
         }
-        ErrorText(error ?: AppGraph.gatt.lastError.takeIf { paired && phase != LinkPhase.CONNECTED })
+        if (issue == com.nunna.embercompanion.link.LinkIssue.TYPE_CODE) Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
+            Text("Type the 6-digit code shown on your watch into the Bluetooth pairing box that Android is showing.", Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
+        }
+        ErrorText(error ?: AppGraph.gatt.lastError.takeIf { paired && phase != LinkPhase.CONNECTED && issue != com.nunna.embercompanion.link.LinkIssue.TYPE_CODE })
+        if (issue == com.nunna.embercompanion.link.LinkIssue.BOND_LOST || issue == com.nunna.embercompanion.link.LinkIssue.PAIRING_FAILED) {
+            OutlinedButton(onClick = { ctx.startActivity(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)) }) { Text("Open Bluetooth settings (forget the watch there)") }
+        }
         ErrorText(watchErr)
         InfoCard("Your watch") {
             val name = watch?.name ?: AppGraph.prefs.watchName ?: "Not paired yet"
@@ -86,10 +94,11 @@ fun HomeScreen(go: (Screen) -> Unit) {
                 Text("Steps today: ${it.steps}")
                 Text("Watch software ${it.fw}")
             }
+            if (!paired || bond != com.nunna.embercompanion.link.Bond.BONDED) Text("To pair: on the watch open Settings > Pair new phone. The watch shows a 6-digit code. Then tap the button below and type that code on your phone.", style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { pairOrConnect() }) { Text(if (paired) "Connect now" else "Pair my watch") }
                 if (paired) {
-                    OutlinedButton(onClick = { doPairAgain(ctx) { paired = false; AppGraph.gatt.stop(); LinkService.stop(ctx) } }) { Text("Forget") }
+                    OutlinedButton(onClick = { doPairAgain(ctx) { paired = false; AppGraph.gatt.forgetBond(); AppGraph.gatt.stop(); LinkService.stop(ctx) } }) { Text("Forget") }
                 }
             }
             if (phase == LinkPhase.CONNECTED) {

@@ -19,6 +19,10 @@ void ble_send_steps(uint32_t steps);
 void ble_music(uint16_t cmd);         // MUSIC_* below
 void ble_find_phone(bool on);
 const char *ble_name(void);
+// ---- pairing (Ember Link security, S1) ----
+void ble_pair_open(void);             // delete the bonded phone and accept a new one for 120 s
+bool ble_pair_window_open(void);
+bool ble_bonded(void);
 
 #define MUSIC_PLAY     0x9D00
 #define MUSIC_PAUSE    0x9D01

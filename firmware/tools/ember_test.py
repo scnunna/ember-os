@@ -128,7 +128,9 @@ for trial in range(3):
     for n in ('r1', 'r2', 'r3', 'r4'): push(n, f"function start() w.title('{n}') end")
     ember.ask(s, 'app run r4', 'CMD app run', 5, sink=[])
     rs = [ember.ask(s, f'app rm {n}', 'CMD app rm', 6) for n in ('r1', 'r2', 'r3', 'r4')]
-    stress_ok += all(r and r.endswith('ok') for r in rs) and ember.ask(s, 'pwr', 'CMD pwr', 4) is not None
+    good = all(r and r.endswith('ok') for r in rs) and ember.ask(s, 'pwr', 'CMD pwr', 4) is not None
+    stress_ok += good
+    if not good: print('   stress round', trial, 'replies:', rs)
 check(stress_ok == 3, 'rapid app install/remove during screen animations never hangs the UI', f'{stress_ok}/3 rounds')
 
 rm_replies = {n: ember.ask(s, f'app rm {n}', 'CMD app rm', 6) for n in ('t_api', 't_loop', 't_bad', 't_mem', 't_tmr')}

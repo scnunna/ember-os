@@ -44,10 +44,13 @@ class LinkService : Service() {
         fun hasBtPermission(ctx: Context) =
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
 
-        fun start(ctx: Context) {
+        const val EXTRA_USER = "user"
+
+        /** [userInitiated] = the user tapped Pair or Connect, so a new bond may be created. Background starts never pair. */
+        fun start(ctx: Context, userInitiated: Boolean = false) {
             AppGraph.init(ctx)
             if (AppGraph.prefs.watchAddress == null || !hasBtPermission(ctx)) return
-            ContextCompat.startForegroundService(ctx, Intent(ctx, LinkService::class.java))
+            ContextCompat.startForegroundService(ctx, Intent(ctx, LinkService::class.java).putExtra(EXTRA_USER, userInitiated))
         }
 
         fun stop(ctx: Context) {
@@ -73,7 +76,7 @@ class LinkService : Service() {
         if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE) else startForeground(1, n)
         val addr = AppGraph.prefs.watchAddress
         if (addr == null || !hasBtPermission(this)) { stopSelf(); return START_NOT_STICKY }
-        AppGraph.gatt.start(addr)
+        AppGraph.gatt.start(addr, intent?.getBooleanExtra(EXTRA_USER, false) == true)
         job?.cancel()
         job = AppGraph.scope.launch {
             launch { combine(AppGraph.link.phase, AppGraph.link.watch, AppGraph.ringing) { _, _, _ -> }.collect { update() } }

@@ -120,8 +120,9 @@ class ProtocolTest {
             Message.Steps(listOf(Message.StepDay(20261114, 1234), Message.StepDay(20261113, 9000))),
             Message.Reply(7, 2), Message.Dismiss(7),
             Message.Recs(listOf(Message.RecFile("M_20261114_093000.wav", 123456, listOf(1000, 5000)))),
-            Message.Wifi("Watch-ABCD", "pw123", "192.168.4.1", null), Message.Wifi("", "", "", "no sd"),
-            Message.Ptt("me", true, 16000, "ima-adpcm"), Message.Ptt("them", false, 16000, "ima-adpcm"),
+            Message.Wifi("Watch-ABCD", "pw123", "192.168.4.1", null, "0123456789abcdef"), Message.Wifi("", "", "", "no sd"),
+            Message.RecDel("M_1.wav", 123456), Message.Err("denied on watch", "app_end"),
+            Message.Ptt("me", true, 16000, "ima-adpcm"), Message.Ptt("them", false, 16000, "ima-adpcm", 123),
             Message.Practice(listOf(Message.PracticeSession(20261114, "18:30", 25, "metronome", 120, 0))),
             Message.FindPhone(true), Message.MusicCmd("vol_up"),
             Message.Apps(listOf("a", "b")), Message.AppOk("a"), Message.Err("boom"),
@@ -145,6 +146,17 @@ class ProtocolTest {
         assertEquals(-18000, o["tz"]!!.jsonPrimitive.int)
         val p = Json.parseToJsonElement(MessageCodec.encode(Message.Practice(listOf(Message.PracticeSession(1, "x", 2, "t", 3, 4))))).jsonObject
         assertEquals(3, p["sessions"]!!.jsonArray[0].jsonObject["bpm_max"]!!.jsonPrimitive.int)
+    }
+
+    @Test fun securityFieldsOnTheWire() {
+        val w = MessageCodec.decode("{\"t\":\"wifi\",\"ssid\":\"Watch-1\",\"pass\":\"abcdefghijkl\",\"ip\":\"192.168.4.1\",\"token\":\"0011223344556677\"}") as Message.Wifi
+        assertEquals("0011223344556677", w.token)
+        assertEquals(12, w.pass.length)
+        val e = MessageCodec.decode("{\"t\":\"err\",\"re\":\"wifi_req\",\"msg\":\"denied on watch\"}") as Message.Err
+        assertEquals("wifi_req", e.re)
+        assertEquals(87, (MessageCodec.decode("{\"t\":\"ptt\",\"side\":\"me\",\"on\":false,\"blocks\":87}") as Message.Ptt).blocks)
+        assertEquals(-1, (MessageCodec.decode("{\"t\":\"ptt\",\"side\":\"me\",\"on\":true}") as Message.Ptt).blocks) // old firmware
+        assertEquals("{\"t\":\"rec_del\",\"n\":\"M_1.wav\",\"s\":42}", MessageCodec.encode(Message.RecDel("M_1.wav", 42)))
     }
 
     @Test fun unknownTypesAndFieldsAreIgnored() {

@@ -60,6 +60,8 @@ void script_rescan(void);
 bool script_put_begin(const char *name);   // upload: begin, data..., end (atomic rename)
 bool script_put_data(const void *d, size_t n);
 bool script_put_end(void);
+const char *script_put_pending(void);   // name of the app being uploaded ("" if none)
+void script_put_abort(void);
 bool script_remove(const char *name);
 void launcher_rebuild_grid(void);
 void launcher_raise(void);              // wrist raised (from the IMU task): light the screen if it is dark
@@ -103,6 +105,9 @@ lv_obj_t *ui_label(lv_obj_t *p, const lv_font_t *f, uint32_t color, const char *
 lv_obj_t *ui_title(lv_obj_t *scr, const char *txt);
 lv_obj_t *ui_btn(lv_obj_t *p, const char *txt, int w, int h, uint32_t color, lv_event_cb_t cb, void *ud);
 void ui_msg(const char *txt);
+void overlay_start(void);            // starts the overlay timer (launcher_start)
+void ui_passkey(int code);           // show the 6-digit pairing code (code < 0 hides it); any task
+bool ui_confirm(const char *question, int timeout_s);   // Allow/Deny on the watch; call from a non-LVGL task
 void *ui_ud(lv_event_t *e);          // user data of a ui_btn() callback
 void cmd_start(void);                // USB serial dev shell
 void usj_end_packet(void);           // make the PC see a reply whose length is a multiple of 64 bytes

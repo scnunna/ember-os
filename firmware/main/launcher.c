@@ -308,6 +308,7 @@ void launcher_start(void)
     lv_screen_load(s_face);
     s_last_act = lv_tick_get();
     s_idle_tmr = lv_timer_create(idle_cb, 250, NULL);
+    overlay_start();
     lv_indev_t *in = bsp_display_get_input_dev();
     if (in) lv_indev_set_read_cb(in, read_wrap);
     bsp_display_brightness_set(bright());      // under the LVGL lock: never race a screen flush on the SPI bus

@@ -53,14 +53,10 @@ fun TranslateScreen(onBack: () -> Unit) {
     val busy by AppGraph.translateBusy.collectAsState()
     val last by AppGraph.lastTranslation.collectAsState()
     val live by AppGraph.pttLive.collectAsState()
-    var packs by remember { mutableStateOf<Set<String>?>(null) }
-    var packError by remember { mutableStateOf<String?>(null) }
-    var downloading by remember { mutableStateOf<String?>(null) }
     var micError by remember { mutableStateOf<String?>(null) }
     var recording by remember { mutableStateOf<String?>(null) }
     val modelState by AppGraph.models.state.collectAsState()
 
-    LaunchedEffect(Unit) { packs = runCatching { AppGraph.translator.downloaded() }.getOrNull() }
     fun setLangs(me: String, them: String) {
         AppGraph.prefs.setLanguages(me, them)
         AppGraph.link.send(Message.TrCfg(me, them))
@@ -71,24 +67,8 @@ fun TranslateScreen(onBack: () -> Unit) {
     Page("Travel translate", onBack) {
         LangPicker("My language", langs.me) { setLangs(it, langs.them) }
         LangPicker("Their language", langs.them) { setLangs(langs.me, it) }
-        InfoCard("Language packs") {
-            Text("Each pack is about 30 MB and is downloaded once, from Google. After that translation works offline.")
-            for (c in listOf(langs.me, langs.them).distinct()) {
-                val has = packs?.contains(c) == true || c == "en" && packs?.contains("en") == true
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(Languages.name(c) + if (has) " - ready" else " - not downloaded")
-                    if (!has) Button(enabled = downloading == null, onClick = {
-                        downloading = c; packError = null
-                        scope.launch {
-                            try { AppGraph.translator.download(c); packs = AppGraph.translator.downloaded() }
-                            catch (e: Exception) { packError = "TR-07: The ${Languages.name(c)} pack did not download. Check your internet and try again." }
-                            downloading = null
-                        }
-                    }) { Text(if (downloading == c) "Downloading..." else "Download") }
-                }
-            }
-            ErrorText(packError)
-        }
+        if (AppGraph.llmModels.path() == null) LlmModelCard("Translation runs on this phone with an AI model, so it needs this one-time download. (Google's translation packs were dropped because they need internet access inside this app.)")
+        else Text("Translation model is ready.", style = MaterialTheme.typography.bodySmall)
         if (modelState !is DownloadState.Done) ModelCard()
         ErrorText(micError)
         InfoCard("With the watch") {
@@ -178,49 +158,3 @@ fun PracticeScreen(onBack: () -> Unit) {
     }
 }
 
-// ---------------------------------------------------------------------------- Settings
-
-@Composable
-fun SettingsScreen(onBack: () -> Unit) {
-    val ctx = LocalContext.current
-    var llm by remember { mutableStateOf(AppGraph.prefs.llmModelPath) }
-    var err by remember { mutableStateOf<String?>(null) }
-    var copying by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        copying = true; err = null
-        scope.launch {
-            try {
-                val name = ctx.contentResolver.query(uri, null, null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(c.getColumnIndexOrThrow(android.provider.OpenableColumns.DISPLAY_NAME)) else null } ?: "model.task"
-                if (!(name.endsWith(".task") || name.endsWith(".litertlm"))) { err = "LM-02: Pick a model file ending in .task or .litertlm."; copying = false; return@launch }
-                val dest = File(ctx.filesDir, "llm/$name")
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    dest.parentFile?.mkdirs()
-                    ctx.contentResolver.openInputStream(uri)!!.use { i -> dest.outputStream().use { o -> i.copyTo(o) } }
-                }
-                AppGraph.prefs.llmModelPath = dest.absolutePath; llm = dest.absolutePath
-            } catch (e: Exception) { err = "LM-03: The model file could not be copied. Make sure there is enough free space." }
-            copying = false
-        }
-    }
-    Page("Settings", onBack) {
-        ModelCard()
-        InfoCard("Better summaries (optional)") {
-            Text("Meeting summaries work without this. If you already have an on-device AI model file (for example Gemma, ending in .task or .litertlm), you can pick it here and it will be used for summaries. This app never downloads such models for you.")
-            ErrorText(err)
-            if (llm != null) {
-                Text("In use: ${File(llm!!).name}")
-                OutlinedButton(onClick = { File(llm!!).delete(); AppGraph.prefs.llmModelPath = null; llm = null }) { Text("Remove it") }
-            }
-            Button(enabled = !copying, onClick = { picker.launch(arrayOf("*/*")) }) { Text(if (copying) "Copying..." else "Choose a model file") }
-        }
-        InfoCard("Permissions") {
-            Button(onClick = { ctx.startActivity(EmberNotificationListener.settingsIntent()) }) { Text("Notification access") }
-            OutlinedButton(onClick = { ctx.startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:" + ctx.packageName))) }) { Text("App permissions") }
-        }
-        InfoCard("About") {
-            Text("Ember Companion 0.1.0. Everything stays on your phone: no accounts, no tracking. Internet is only used when you tap a Download button.")
-        }
-    }
-}

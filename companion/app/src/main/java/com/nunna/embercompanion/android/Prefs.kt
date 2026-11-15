@@ -29,7 +29,21 @@ object Errors {
     const val STT_MODEL = "ST-01: The speech model is not downloaded yet. Open Settings in this app and tap Download."
     const val STT_FAIL = "ST-02: Could not turn the recording into text. Try again, or download the speech model again."
     const val LLM_FAIL = "LM-01: The AI summary model could not run, so the simple summary was used instead."
-    const val TR_PACK = "TR-06: Translation language packs are missing. Open Travel translate and tap Download."
+    const val TR_PACK = "TR-06: The translation model is missing. Open Travel translate and download it (it comes through Ember Gateway)."
+    const val REPAIR = "BT-04: The watch no longer trusts this phone. On the watch open Settings > Pair new phone, then tap Pair here again."
+    const val PAIR_FAILED = "BT-05: Pairing did not finish. Wake the watch, open Settings > Pair new phone, and type the 6-digit code it shows."
+    const val NEEDS_PAIRING = "BT-06: This phone is not paired with the watch yet. On the watch open Settings > Pair new phone, then tap Pair here."
+    const val GW_MISSING = "GW-01: Ember Gateway is not installed. Install the Ember Gateway app first (it is the only app allowed to use the internet), then try again."
+    const val GW_DENIED = "GW-02: Ember Gateway would not talk to this app. Both apps must be installed from the same build; reinstall Gateway first, then Companion."
+    const val GW_NO = "GW-03: You said no in Ember Gateway, so nothing was downloaded."
+    const val GW_EXPIRED = "GW-04: Nobody approved the download in Ember Gateway in time. Tap the button again and approve it there."
+    const val GW_BLOCKED = "GW-05: Ember Gateway blocked that address. Only the watch Wi-Fi and the approved model sites are allowed."
+    const val GW_FAIL = "GW-06: The download did not finish. Check your internet (or stay near the watch) and try again."
+    const val GW_HASH = "GW-07: The downloaded file did not match its checksum, so it was thrown away. Try again."
+    const val WIFI_403 = "WF-04: The watch refused the download key. Start the download again so the watch makes a new one."
+    const val WIFI_SIZE = "WF-05: The recording was not complete, so it was not used and the watch copy was kept. Try again."
+    const val LLM_MODEL = "LM-04: The AI model is not on this phone yet. Open Settings and download it (about 2.4 GB, through Ember Gateway)."
+    const val LLM_RUN = "LM-05: The AI model could not start. Close other apps and try again."
     const val MIC = "MC-01: The microphone permission is needed. Tap Allow when asked."
     const val WATCH_ERR = "WA-01: The watch reported a problem"
     const val APP_BAD = "AP-01: That file does not look like a watch app. Pick a .lua file with a start function."
@@ -59,6 +73,20 @@ class Prefs(ctx: Context) {
 
     fun setNotifCustom(on: Boolean) { sp.edit().putBoolean("notif_custom", on).apply() }
 
+    /** Delete the raw audio after it was turned into text (default), or keep it for 7 days. */
+    var keepAudioDays: Int
+        get() = sp.getInt("keep_audio_days", 0)
+        set(v) { sp.edit().putInt("keep_audio_days", v).apply() }
+
+    /** After a verified download, tell the watch to delete its copy (default on). */
+    var deleteFromWatch: Boolean
+        get() = sp.getBoolean("del_from_watch", true)
+        set(v) { sp.edit().putBoolean("del_from_watch", v).apply() }
+
+    var sttModelId: String
+        get() = sp.getString("stt_model", "tiny") ?: "tiny"
+        set(v) { sp.edit().putString("stt_model", v).apply() }
+
     var llmModelPath: String?
         get() = sp.getString("llm", null)
         set(v) { sp.edit().putString("llm", v).apply() }
@@ -77,11 +105,12 @@ class StepsStore(ctx: Context) {
     fun update(new: List<Message.StepDay>) {
         val map = (_days.value + new).associateBy { it.date }.toSortedMap(compareByDescending { it })
         _days.value = map.values.take(30)
-        sp.edit().putString("d", JSONArray().also { a -> _days.value.forEach { a.put(JSONObject().put("d", it.date).put("s", it.steps)) } }.toString()).apply()
+        val json = JSONArray().also { a -> _days.value.forEach { a.put(JSONObject().put("d", it.date).put("s", it.steps)) } }.toString()
+        sp.edit().putString("enc", AppCrypto.sealToString(json, "steps")).apply()
     }
 
     private fun read(): List<Message.StepDay> = runCatching {
-        val a = JSONArray(sp.getString("d", "[]"))
+        val a = JSONArray(sp.getString("enc", null)?.let { AppCrypto.openFromString(it, "steps") } ?: "[]")
         (0 until a.length()).map { Message.StepDay(a.getJSONObject(it).getInt("d"), a.getJSONObject(it).getInt("s")) }
     }.getOrDefault(emptyList())
 }
@@ -93,13 +122,14 @@ class PracticeStore(ctx: Context) {
 
     fun merge(new: List<Message.PracticeSession>) {
         _sessions.value = PracticeCalc.merge(_sessions.value, new).takeLast(500)
-        sp.edit().putString("s", JSONArray().also { a ->
+        val json = JSONArray().also { a ->
             _sessions.value.forEach { a.put(JSONObject().put("d", it.date).put("st", it.start).put("m", it.min).put("t", it.tool).put("b", it.bpmMax).put("c", it.changes)) }
-        }.toString()).apply()
+        }.toString()
+        sp.edit().putString("enc", AppCrypto.sealToString(json, "practice")).apply()
     }
 
     private fun read(): List<Message.PracticeSession> = runCatching {
-        val a = JSONArray(sp.getString("s", "[]"))
+        val a = JSONArray(sp.getString("enc", null)?.let { AppCrypto.openFromString(it, "practice") } ?: "[]")
         (0 until a.length()).map {
             val o = a.getJSONObject(it)
             Message.PracticeSession(o.getInt("d"), o.getString("st"), o.getInt("m"), o.getString("t"), o.getInt("b"), o.getInt("c"))
@@ -114,10 +144,11 @@ class NotesStore(private val ctx: Context) {
     private val _notes = MutableStateFlow(load())
     val notes: StateFlow<List<NoteRecord>> = _notes
 
-    private fun fileFor(id: String) = File(dir, id.replace(Regex("[^A-Za-z0-9._-]"), "_") + ".json")
+    private fun fileFor(id: String) = File(dir, id.replace(Regex("[^A-Za-z0-9._-]"), "_") + ".enc")
 
+    /** Notes and transcripts are encrypted (AES-256-GCM, Android Keystore). */
     fun save(n: NoteRecord) {
-        fileFor(n.id).writeText(json.encodeToString(n))
+        fileFor(n.id).writeBytes(AppCrypto.box.encryptString(json.encodeToString(n), "note"))
         _notes.value = load()
     }
 
@@ -126,7 +157,7 @@ class NotesStore(private val ctx: Context) {
     fun delete(id: String) { fileFor(id).delete(); _notes.value = load() }
 
     private fun load(): List<NoteRecord> =
-        (dir.listFiles { f -> f.extension == "json" } ?: emptyArray())
-            .mapNotNull { runCatching { json.decodeFromString<NoteRecord>(it.readText()) }.getOrNull() }
+        (dir.listFiles { f -> f.extension == "enc" } ?: emptyArray())
+            .mapNotNull { runCatching { json.decodeFromString<NoteRecord>(AppCrypto.box.decryptString(it.readBytes(), "note")) }.getOrNull() }
             .sortedByDescending { it.createdMs }
 }

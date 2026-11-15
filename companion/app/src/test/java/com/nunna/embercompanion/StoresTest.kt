@@ -15,11 +15,18 @@ import org.robolectric.annotation.Config
 class StoresTest {
     private val ctx: Context get() = ApplicationProvider.getApplicationContext()
 
+    @org.junit.Before fun key() { AppCrypto.useKeyForTests(javax.crypto.KeyGenerator.getInstance("AES").apply { init(256) }.generateKey().also { keep = it }) }
+    private var keep: javax.crypto.SecretKey? = null
+    @org.junit.After fun unkey() { AppCrypto.useKeyForTests(null) }
+
     @Test fun notesPersist() {
         val s = NotesStore(ctx)
         s.save(NoteRecord("M_1.wav", "Standup", 5, listOf(TranscriptSegment(0, "hi")), listOf(10), "Sum", listOf("do it"), "Simple"))
         assertEquals(1, NotesStore(ctx).notes.value.size) // a fresh store reads it back from disk
         assertEquals("Standup", NotesStore(ctx).get("M_1.wav")!!.title)
+        // what is on disk is ciphertext: neither the title nor the transcript can be found in the files
+        val raw = java.io.File(ctx.filesDir, "notes").listFiles()!!.joinToString("") { String(it.readBytes(), Charsets.ISO_8859_1) }
+        assertFalse(raw.contains("Standup")); assertFalse(raw.contains("hi"))
         s.delete("M_1.wav")
         assertTrue(NotesStore(ctx).notes.value.isEmpty())
     }
@@ -33,6 +40,10 @@ class StoresTest {
         val a = Message.PracticeSession(20261114, "18:30", 25, "metronome", 120, 0)
         p.merge(listOf(a)); p.merge(listOf(a.copy(min = 30)))
         assertEquals(30, PracticeStore(ctx).sessions.value.single().min)
+        for (f in listOf("steps", "practice")) {
+            val txt = java.io.File(ctx.applicationInfo.dataDir, "shared_prefs/$f.xml").readText()
+            assertTrue("$f stored encrypted", txt.contains("name=\"enc\"") && !txt.contains("20261114") && !txt.contains("metronome"))
+        }
     }
 
     @Test fun notificationRules() {

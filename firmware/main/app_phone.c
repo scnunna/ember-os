@@ -7,7 +7,7 @@
 #include "wifi.h"
 #include "link.h"
 
-static lv_obj_t *s_ble_lbl, *s_ble_btn_lbl, *s_notifs, *s_wifi_btn_lbl, *s_wifi_info;
+static lv_obj_t *s_chr_lbl, *s_ble_lbl, *s_ble_btn_lbl, *s_notifs, *s_wifi_btn_lbl, *s_wifi_info;
 static lv_timer_t *s_tm;
 
 // ---- Ember Companion notifications: newest one with quick-reply buttons ----
@@ -51,9 +51,11 @@ static void refresh(lv_timer_t *t)
         int pb = ble_phone_batt();
         if (pb >= 0) snprintf(b, sizeof(b), LV_SYMBOL_BLUETOOTH " Connected    phone battery %d%%", pb);
         else snprintf(b, sizeof(b), LV_SYMBOL_BLUETOOTH " Connected");
-    } else snprintf(b, sizeof(b), "Waiting for phone - Ember Companion or Chronos (%s)", ble_name());
+    } else if (ble_pair_window_open()) snprintf(b, sizeof(b), "PAIRING OPEN (2 min): in Ember Companion tap Pair, pick %s", ble_name());
+    else snprintf(b, sizeof(b), "%s - waiting for Ember Companion (%s)", ble_bonded() ? "Paired" : "NOT paired: tap Pair phone", ble_name());
     lv_label_set_text(s_ble_lbl, b);
-    lv_label_set_text(s_ble_btn_lbl, ble_enabled() ? "Bluetooth: ON" : "Bluetooth: OFF");
+    lv_label_set_text(s_ble_btn_lbl, ble_enabled() ? "BT: ON" : "BT: OFF");
+    lv_label_set_text(s_chr_lbl, hw_pref_get("chronos", 0) ? "Chronos: ON" : "Chronos: OFF");
 
     if (link_notifs(b, sizeof(b))) { lv_obj_set_height(s_notifs, 74); lv_label_set_text(s_notifs, b); goto wifi; }
     lv_obj_set_height(s_notifs, 120);
@@ -72,13 +74,26 @@ static void refresh(lv_timer_t *t)
 wifi:
     lv_label_set_text(s_wifi_btn_lbl, wifi_ap_active() ? "Wi-Fi hotspot: ON" : "Wi-Fi hotspot: OFF");
     if (wifi_ap_active())
-        snprintf(b, sizeof(b), "Join Wi-Fi  %s\nPassword  %s\nthen open  http://192.168.4.1\n(%d device%s connected)", wifi_ap_ssid(), wifi_ap_pass(),
-                 wifi_ap_clients(), wifi_ap_clients() == 1 ? "" : "s");
+        snprintf(b, sizeof(b), "Join Wi-Fi  %s   Password  %s\nopen  192.168.4.1/?k=%s\n(new password + key each time; %d connected)", wifi_ap_ssid(), wifi_ap_pass(),
+                 wifi_ap_token(), wifi_ap_clients());
     else snprintf(b, sizeof(b), "Turn on to download recordings\nand set the clock from your phone.\nNo internet needed.");
     lv_label_set_text(s_wifi_info, b);
 }
 
 static void ble_cb(lv_event_t *e) { ble_set_enabled(!ble_enabled()); refresh(NULL); }
+static void pair_cb(lv_event_t *e)
+{
+    ble_pair_open();
+    ui_msg("Pairing open for 2 minutes.\nThe old phone is forgotten.");
+    refresh(NULL);
+}
+static void chronos_cb(lv_event_t *e)
+{
+    int v = !hw_pref_get("chronos", 0);
+    hw_pref_set("chronos", v);
+    ui_msg(v ? "Chronos ON after restart\n(it has no password - less safe)" : "Chronos OFF after restart");
+    refresh(NULL);
+}
 static void wifi_cb(lv_event_t *e)
 {
     if (wifi_ap_active()) wifi_ap_stop();
@@ -95,9 +110,21 @@ static void start(lv_obj_t *scr)
     s_ble_lbl = ui_label(scr, &lv_font_montserrat_14, C_ACCENT, "");
     lv_obj_set_width(s_ble_lbl, 370);
     lv_obj_align(s_ble_lbl, LV_ALIGN_TOP_LEFT, 20, 64);
-    lv_obj_t *b = ui_btn(scr, "", 370, 48, 0x2D6CDF, ble_cb, NULL);
-    lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 106);
+    lv_obj_t *b = ui_btn(scr, "", 110, 48, 0x2D6CDF, ble_cb, NULL);
+    lv_obj_align(b, LV_ALIGN_TOP_LEFT, 20, 106);
     s_ble_btn_lbl = lv_obj_get_child(b, 0);
+    // press-and-HOLD: pairing forgets the current phone, so a stray tap (or a pocket) must never trigger it
+    lv_obj_t *pb = lv_button_create(scr);
+    lv_obj_set_size(pb, 128, 48);
+    lv_obj_set_style_bg_color(pb, lv_color_hex(0x1F7A4D), 0);
+    lv_obj_align(pb, LV_ALIGN_TOP_LEFT, 138, 106);
+    lv_obj_t *pl = ui_label(pb, &lv_font_montserrat_14, C_TEXT, "Hold: pair phone");
+    lv_obj_center(pl);
+    lv_obj_add_event_cb(pb, pair_cb, LV_EVENT_LONG_PRESSED, NULL);
+    lv_obj_t *cb = ui_btn(scr, "", 116, 48, 0x444444, chronos_cb, NULL);
+    lv_obj_align(cb, LV_ALIGN_TOP_LEFT, 274, 106);
+    s_chr_lbl = lv_obj_get_child(cb, 0);
+    lv_obj_set_style_text_font(s_chr_lbl, &lv_font_montserrat_14, 0);
 
     lv_obj_t *h = ui_label(scr, &lv_font_montserrat_14, C_DIM, "NOTIFICATIONS");
     lv_obj_align(h, LV_ALIGN_TOP_LEFT, 20, 168);

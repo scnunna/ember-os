@@ -19,6 +19,10 @@
 #include "hw.h"
 #include "ble.h"
 #include "link.h"
+#include "esp_random.h"
+#include "esp_timer.h"
+#include "host/ble_store.h"
+void ble_store_config_init(void);
 
 static const char *TAG = "ble";
 static void send_battery(void);
@@ -205,21 +209,56 @@ static int rx_access(uint16_t ch, uint16_t ah, struct ble_gatt_access_ctxt *ctxt
 }
 static int tx_access(uint16_t ch, uint16_t ah, struct ble_gatt_access_ctxt *ctxt, void *arg) { return 0; }
 
-static const struct ble_gatt_svc_def GATT[] = {
-    {.type = BLE_GATT_SVC_TYPE_PRIMARY,
+// Ember Link: every write needs an encrypted, authenticated (passkey) link -> ATT error 0x05 makes Android pair.
+// Subscriptions are also refused in link.c until the link is secure (NimBLE does not guard CCCD writes itself).
+#define LINK_SVC_DEF {.type = BLE_GATT_SVC_TYPE_PRIMARY, .uuid = &LINK_UUID_SVC.u,                                   \
+     .characteristics = (struct ble_gatt_chr_def[]){                                                                 \
+         {.uuid = &LINK_UUID_CMD.u, .access_cb = link_cmd_access,                                                   \
+          .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_WRITE_ENC | BLE_GATT_CHR_F_WRITE_AUTHEN}, \
+         {.uuid = &LINK_UUID_EVT.u, .access_cb = link_noop_access, .val_handle = &link_evt_handle, .flags = BLE_GATT_CHR_F_NOTIFY}, \
+         {.uuid = &LINK_UUID_AUDIO.u, .access_cb = link_noop_access, .val_handle = &link_audio_handle, .flags = BLE_GATT_CHR_F_NOTIFY}, \
+         {0}}}
+static const struct ble_gatt_svc_def GATT_WITH_CHRONOS[] = {
+    {.type = BLE_GATT_SVC_TYPE_PRIMARY,                       // Chronos (no authentication: off by default, S2)
      .uuid = &UUID_SVC.u,
      .characteristics = (struct ble_gatt_chr_def[]){
          {.uuid = &UUID_RX.u, .access_cb = rx_access, .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP},
          {.uuid = &UUID_TX.u, .access_cb = tx_access, .val_handle = &s_tx_handle, .flags = BLE_GATT_CHR_F_NOTIFY},
          {0}}},
-    {.type = BLE_GATT_SVC_TYPE_PRIMARY,                       // Ember Link (docs/EMBER_LINK.md)
-     .uuid = &LINK_UUID_SVC.u,
-     .characteristics = (struct ble_gatt_chr_def[]){
-         {.uuid = &LINK_UUID_CMD.u, .access_cb = link_cmd_access, .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP},
-         {.uuid = &LINK_UUID_EVT.u, .access_cb = link_noop_access, .val_handle = &link_evt_handle, .flags = BLE_GATT_CHR_F_NOTIFY},
-         {.uuid = &LINK_UUID_AUDIO.u, .access_cb = link_noop_access, .val_handle = &link_audio_handle, .flags = BLE_GATT_CHR_F_NOTIFY},
-         {0}}},
+    LINK_SVC_DEF,
     {0}};
+static const struct ble_gatt_svc_def GATT_LINK_ONLY[] = {LINK_SVC_DEF, {0}};
+static bool s_chronos;
+
+// ---------------------------------------------------------------- pairing (S1): passkey shown on the watch, one phone
+static volatile int64_t s_pair_until;           // pairing window end (us); 0 = closed
+static esp_timer_handle_t s_unsec_tmr;           // drops connections that never become secure (slot squatting)
+bool ble_pair_window_open(void) { return esp_timer_get_time() < s_pair_until; }
+void ble_pair_open(void)
+{
+    ble_store_clear();                           // forget the old phone: only one bond, ever
+    s_pair_until = esp_timer_get_time() + 120LL * 1000000;
+    if (s_conn != BLE_HS_CONN_HANDLE_NONE) ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+    ESP_LOGW(TAG, "pairing window open for 120 s, old bonds deleted");
+}
+bool ble_bonded(void)
+{
+    int n = 0;
+    ble_store_util_count(BLE_STORE_OBJ_TYPE_PEER_SEC, &n);
+    return n > 0;
+}
+static bool conn_secure(uint16_t c)
+{
+    struct ble_gap_conn_desc d;
+    return c != BLE_HS_CONN_HANDLE_NONE && ble_gap_conn_find(c, &d) == 0 && d.sec_state.encrypted && d.sec_state.authenticated && d.sec_state.bonded;
+}
+static void unsec_cb(void *a)
+{
+    if (s_conn != BLE_HS_CONN_HANDLE_NONE && !conn_secure(s_conn) && !s_chronos) {
+        ESP_LOGW(TAG, "connection not secured in 30 s: dropping it");
+        ble_gap_terminate(s_conn, BLE_ERR_AUTH_FAIL);
+    }
+}
 
 static int gap_event(struct ble_gap_event *ev, void *arg);
 
@@ -233,7 +272,7 @@ static void advertise(void)
     f.name_is_complete = 1;
     ble_gap_adv_set_fields(&f);
     struct ble_hs_adv_fields rsp = {0};
-    rsp.uuids128 = (ble_uuid128_t *)&UUID_SVC;
+    rsp.uuids128 = (ble_uuid128_t *)(s_chronos ? &UUID_SVC : &LINK_UUID_SVC);
     rsp.num_uuids128 = 1;
     rsp.uuids128_is_complete = 1;
     ble_gap_adv_rsp_set_fields(&rsp);
@@ -247,11 +286,16 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
 {
     switch (ev->type) {
     case BLE_GAP_EVENT_CONNECT:
-        if (ev->connect.status == 0) { s_conn = ev->connect.conn_handle; link_on_connect(s_conn); ESP_LOGI(TAG, "connected"); }
-        else advertise();
+        if (ev->connect.status == 0) {
+            s_conn = ev->connect.conn_handle; link_on_connect(s_conn); ESP_LOGI(TAG, "connected");
+            esp_timer_stop(s_unsec_tmr);
+            esp_timer_start_once(s_unsec_tmr, 30LL * 1000000);
+        } else advertise();
         break;
     case BLE_GAP_EVENT_DISCONNECT:
         s_conn = BLE_HS_CONN_HANDLE_NONE; s_asm_total = 0;
+        esp_timer_stop(s_unsec_tmr);
+        ui_passkey(-1);
         link_on_disconnect();
         ESP_LOGI(TAG, "disconnected");
         advertise();
@@ -263,6 +307,36 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(TAG, "MTU %d", ev->mtu.value);
         break;
+    case BLE_GAP_EVENT_PASSKEY_ACTION:
+        if (ev->passkey.params.action == BLE_SM_IOACT_DISP) {
+            if (!ble_pair_window_open()) {                    // nobody asked to pair: refuse (S1, one phone only)
+                ESP_LOGW(TAG, "pairing attempt outside the pairing window: refused");
+                ble_gap_terminate(ev->passkey.conn_handle, BLE_ERR_AUTH_FAIL);
+                break;
+            }
+            struct ble_sm_io pk = {.action = BLE_SM_IOACT_DISP, .passkey = esp_random() % 1000000};
+            ui_passkey((int)pk.passkey);
+            ble_sm_inject_io(ev->passkey.conn_handle, &pk);
+        } else ble_gap_terminate(ev->passkey.conn_handle, BLE_ERR_AUTH_FAIL);   // only passkey-display is allowed
+        break;
+    case BLE_GAP_EVENT_REPEAT_PAIRING: {
+        // a known phone lost its keys: only re-pair inside the window, else keep the old bond and refuse
+        if (!ble_pair_window_open()) return BLE_GAP_REPEAT_PAIRING_IGNORE;
+        struct ble_gap_conn_desc d;
+        if (ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d) == 0) ble_store_util_delete_peer(&d.peer_id_addr);
+        return BLE_GAP_REPEAT_PAIRING_RETRY;
+    }
+    case BLE_GAP_EVENT_ENC_CHANGE: {
+        bool sec = ev->enc_change.status == 0 && conn_secure(ev->enc_change.conn_handle);
+        ESP_LOGI(TAG, "encryption change status=%d secure=%d", ev->enc_change.status, sec);
+        ui_passkey(-1);
+        if (sec) {
+            esp_timer_stop(s_unsec_tmr);
+            if (ble_pair_window_open()) { s_pair_until = 0; hw_buzz_pattern(2, 80, 100); }   // paired: close the window
+            link_on_secure(true);
+        } else ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_AUTH_FAIL);
+        break;
+    }
     case BLE_GAP_EVENT_ADV_COMPLETE: advertise(); break;
     default: break;
     }
@@ -305,12 +379,25 @@ void ble_start(void)
     link_start();
     if (nimble_port_init() != ESP_OK) { ESP_LOGE(TAG, "nimble init failed"); return; }
     ble_hs_cfg.sync_cb = on_sync;
+    // S1: LE Secure Connections, bonding, MITM via passkey shown on the watch; keys stored in NVS
+    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_DISP_ONLY;
+    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_mitm = 1;
+    ble_hs_cfg.sm_sc = 1;
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+    ble_store_config_init();
+    esp_timer_create_args_t ta = {.callback = unsec_cb, .name = "ble_unsec"};
+    esp_timer_create(&ta, &s_unsec_tmr);
+    s_chronos = hw_pref_get("chronos", 0);            // S2: unauthenticated Chronos service off by default
+    const struct ble_gatt_svc_def *gatt = s_chronos ? GATT_WITH_CHRONOS : GATT_LINK_ONLY;
     ble_svc_gap_init();
     ble_svc_gatt_init();
-    ble_gatts_count_cfg(GATT);
-    ble_gatts_add_svcs(GATT);
+    ble_gatts_count_cfg(gatt);
+    ble_gatts_add_svcs(gatt);
     ble_svc_gap_device_name_set(s_name);
     nimble_port_freertos_init(host_task);
     s_inited = true;
-    ESP_LOGI(TAG, "started as %s (enabled=%d)", s_name, s_enabled);
+    ESP_LOGI(TAG, "started as %s (enabled=%d chronos=%d bonded=%d)", s_name, s_enabled, s_chronos, ble_bonded());
 }

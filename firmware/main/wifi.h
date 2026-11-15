@@ -8,4 +8,5 @@ void wifi_ap_stop(void);
 bool wifi_ap_active(void);
 const char *wifi_ap_ssid(void);
 const char *wifi_ap_pass(void);
+const char *wifi_ap_token(void);   // per-session HTTP access key (S4)
 int  wifi_ap_clients(void);

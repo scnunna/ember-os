@@ -37,8 +37,10 @@ const ble_uuid128_t LINK_UUID_AUDIO = BLE_UUID128_INIT(LUUID(0x04));
 uint16_t link_evt_handle, link_audio_handle;
 
 static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
-static volatile bool s_evt_sub, s_audio_sub;
-static QueueHandle_t s_rxq, s_txq;          // char* messages (heap)
+static volatile bool s_evt_sub_raw, s_audio_sub_raw, s_secure;   // raw CCCD state; only honoured once s_secure
+#define s_evt_sub   (s_secure && s_evt_sub_raw)
+#define s_audio_sub (s_secure && s_audio_sub_raw)
+static QueueHandle_t s_rxq, s_txq;          // char* messages (heap); first byte: 'B' = Bluetooth, 'U' = USB (trusted)
 
 bool link_ready(void) { return s_conn != BLE_HS_CONN_HANDLE_NONE && s_evt_sub; }
 
@@ -50,6 +52,7 @@ static void rx_packet(const uint8_t *d, int n)
 {
     if (n < 1) return;
     uint8_t f = d[0];
+    if (!s_secure) return;                   // defence in depth: GATT flags already require encryption
     if (f & 1) s_asm_len = 0;                // FIRST: start over
     if (s_asm_len < 0) return;               // continuation without a start: ignore
     int c = n - 1;
@@ -58,9 +61,9 @@ static void rx_packet(const uint8_t *d, int n)
     s_asm_len += c;
     if (f & 2) {                             // LAST: hand over a copy
         s_asm[s_asm_len] = 0;
-        char *m = malloc(s_asm_len + 1);
+        char *m = malloc(s_asm_len + 2);
         // wait (briefly) rather than drop: the phone streams app_data chunks back to back
-        if (m) { memcpy(m, s_asm, s_asm_len + 1); if (xQueueSend(s_rxq, &m, pdMS_TO_TICKS(500)) != pdTRUE) { free(m); ESP_LOGE(TAG, "rx queue full, message dropped"); } }
+        if (m) { m[0] = 'B'; memcpy(m + 1, s_asm, s_asm_len + 1); if (xQueueSend(s_rxq, &m, pdMS_TO_TICKS(500)) != pdTRUE) { free(m); ESP_LOGE(TAG, "rx queue full, message dropped"); } }
         s_asm_len = -1;
     }
 }
@@ -68,6 +71,7 @@ static void rx_packet(const uint8_t *d, int n)
 int link_cmd_access(uint16_t ch, uint16_t ah, struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
+    if (!s_secure) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
     uint8_t buf[520];
     uint16_t len = 0;
     if (ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &len) == 0) rx_packet(buf, len);
@@ -75,10 +79,23 @@ int link_cmd_access(uint16_t ch, uint16_t ah, struct ble_gatt_access_ctxt *ctxt,
 }
 int link_noop_access(uint16_t ch, uint16_t ah, struct ble_gatt_access_ctxt *ctxt, void *arg) { return 0; }
 
+void link_inject_untrusted(const char *json)   // test hook: treated exactly like a message from the radio
+{
+    size_t n = strlen(json);
+    char *m = malloc(n + 2);
+    if (!m) return;
+    m[0] = 'B';
+    memcpy(m + 1, json, n + 1);
+    if (xQueueSend(s_rxq, &m, pdMS_TO_TICKS(100)) != pdTRUE) free(m);
+}
 void link_inject(const char *json)
 {
-    char *m = strdup(json);
-    if (m && xQueueSend(s_rxq, &m, pdMS_TO_TICKS(100)) != pdTRUE) free(m);
+    size_t n = strlen(json);
+    char *m = malloc(n + 2);
+    if (!m) return;
+    m[0] = 'U';                                 // USB dev shell = physical access: skips on-watch confirmation
+    memcpy(m + 1, json, n + 1);
+    if (xQueueSend(s_rxq, &m, pdMS_TO_TICKS(100)) != pdTRUE) free(m);
 }
 
 // ------------------------------------------------------------------ TX: queue of JSON strings, fragmented by MTU
@@ -122,13 +139,19 @@ static void tx_task(void *a)
 }
 
 // ------------------------------------------------------------------ connection hooks (host task)
-void link_on_connect(uint16_t conn) { s_conn = conn; s_evt_sub = s_audio_sub = false; s_asm_len = -1; }
-void link_on_disconnect(void) { s_conn = BLE_HS_CONN_HANDLE_NONE; s_evt_sub = s_audio_sub = false; link_ptt_stop(); }
+void link_on_connect(uint16_t conn) { s_conn = conn; s_evt_sub_raw = s_audio_sub_raw = s_secure = false; s_asm_len = -1; }
+void link_on_disconnect(void) { s_conn = BLE_HS_CONN_HANDLE_NONE; s_evt_sub_raw = s_audio_sub_raw = s_secure = false; link_ptt_stop(); }
 static volatile bool s_hello_due;
 void link_on_subscribe(uint16_t attr, bool notify)
 {
-    if (attr == link_evt_handle) { s_evt_sub = notify; if (notify) s_hello_due = true; }
-    if (attr == link_audio_handle) s_audio_sub = notify;
+    // a subscription on an insecure link is remembered but nothing is sent until the link is secure
+    if (attr == link_evt_handle) { s_evt_sub_raw = notify; if (notify && s_secure) s_hello_due = true; }
+    if (attr == link_audio_handle) s_audio_sub_raw = notify;
+}
+void link_on_secure(bool secure)
+{
+    s_secure = secure;
+    if (secure && s_evt_sub_raw) s_hello_due = true;
 }
 
 // ------------------------------------------------------------------ notifications store
@@ -373,7 +396,16 @@ static bool safe_id(const char *s)
     return strstr(s, "..") == NULL;
 }
 
-static void handle(const char *json)
+// S3: risky requests from the phone need a tap on the watch (USB = physical access, trusted)
+static bool allowed(bool trusted, const char *question)
+{
+    if (trusted) return true;
+    if (ui_confirm(question, 30)) return true;
+    send_simple("err", "msg", "denied on watch");
+    return false;
+}
+
+static void handle(const char *json, bool trusted)
 {
     cJSON *m = cJSON_Parse(json);
     const cJSON *tv = m ? cJSON_GetObjectItemCaseSensitive(m, "t") : NULL;
@@ -413,10 +445,11 @@ static void handle(const char *json)
     } else if (!strcmp(t, "steps_req")) link_send_steps();
     else if (!strcmp(t, "recs_req")) send_recs();
     else if (!strcmp(t, "wifi_req")) {
+        if (!allowed(trusted, "Phone wants to turn on the Wi-Fi hotspot\n(to download recordings). Allow?")) goto done;
         wifi_ap_start();
         cJSON *o = cJSON_CreateObject();
         cJSON_AddStringToObject(o, "t", "wifi");
-        if (wifi_ap_active()) { cJSON_AddStringToObject(o, "ssid", wifi_ap_ssid()); cJSON_AddStringToObject(o, "pass", wifi_ap_pass()); cJSON_AddStringToObject(o, "ip", "192.168.4.1"); }
+        if (wifi_ap_active()) { cJSON_AddStringToObject(o, "ssid", wifi_ap_ssid()); cJSON_AddStringToObject(o, "pass", wifi_ap_pass()); cJSON_AddStringToObject(o, "ip", "192.168.4.1"); cJSON_AddStringToObject(o, "token", wifi_ap_token()); }
         else cJSON_AddStringToObject(o, "err", "hotspot could not start (low memory or busy)");
         send_obj(o);
     } else if (!strcmp(t, "wifi_off")) wifi_ap_stop();
@@ -447,6 +480,8 @@ static void handle(const char *json)
         if (!cJSON_IsString(b) || mbedtls_base64_decode(dec, sizeof(dec), &ol, (const unsigned char *)b->valuestring, strlen(b->valuestring)) || !script_put_data(dec, ol))
             send_simple("err", "msg", "app upload failed");
     } else if (!strcmp(t, "app_end")) {
+        char q[96]; snprintf(q, sizeof(q), "Install app \"%s\" from your phone?", script_put_pending());
+        if (!allowed(trusted, q)) { script_put_abort(); goto done; }
         if (script_put_end()) {
             cJSON *o = cJSON_CreateObject();
             cJSON_AddStringToObject(o, "t", "app_ok");
@@ -454,6 +489,8 @@ static void handle(const char *json)
         } else send_simple("err", "msg", "app install failed");
     } else if (!strcmp(t, "app_rm")) {
         char nm[32]; copy_str(nm, sizeof(nm), m, "name");
+        char q[96]; snprintf(q, sizeof(q), "Remove app \"%s\"?", nm);
+        if (!allowed(trusted, q)) goto done;
         script_remove(nm);
         send_apps();
     } else if (!strcmp(t, "find_watch")) {
@@ -461,6 +498,22 @@ static void handle(const char *json)
         hw_buzz_pattern(3, 300, 200);
         for (int i = 0; i < 3; i++) hw_beep(1760, 180, 90);
     } else if (!strcmp(t, "practice_req")) link_send_practice();
+    else if (!strcmp(t, "rec_del")) {                  // the phone has a verified copy: delete ours (size must match)
+        char nm[64]; copy_str(nm, sizeof(nm), m, "n");
+        int sz = get_int(m, "s", -1);
+        size_t l = strlen(nm);
+        if (safe_id(nm) && l > 4 && !strcasecmp(nm + l - 4, ".wav")) {
+            char p[128]; struct stat st;
+            snprintf(p, sizeof(p), "%s/rec/%s", hw_storage_root(), nm);
+            if (stat(p, &st) == 0 && st.st_size == sz) {
+                remove(p);
+                snprintf(p, sizeof(p), "%s/rec/%.*s.marks", hw_storage_root(), (int)(l - 4), nm);
+                remove(p);
+            } else send_simple("err", "msg", "size mismatch or no such recording - kept");
+        } else send_simple("err", "msg", "bad recording name");
+        send_recs();
+    }
+done:
     s_cur_t = "";                               // t points into m, which is freed next
     cJSON_Delete(m);
 }
@@ -470,7 +523,7 @@ static void link_task(void *a)
     int64_t last_steps = 0;
     while (1) {
         char *msg;
-        if (xQueueReceive(s_rxq, &msg, pdMS_TO_TICKS(30000)) == pdTRUE) { handle(msg); free(msg); }
+        if (xQueueReceive(s_rxq, &msg, pdMS_TO_TICKS(30000)) == pdTRUE) { handle(msg + 1, msg[0] == 'U'); free(msg); }
         if (s_hello_due) { s_hello_due = false; send_hello(); link_send_steps(); last_steps = esp_timer_get_time(); }
         if (link_ready() && esp_timer_get_time() - last_steps > 3600LL * 1000000) { last_steps = esp_timer_get_time(); link_send_steps(); }
     }

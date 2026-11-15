@@ -10,103 +10,30 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import com.nunna.embercompanion.protocol.Chunker
 import com.nunna.embercompanion.protocol.TranscriptSegment
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
-import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
-import java.io.File
-import java.io.FilterInputStream
-import java.io.InputStream
-import java.net.URL
 import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/** Where the offline speech model comes from. Official k2-fsa/sherpa-onnx GitHub release, downloaded once on request. */
-object SpeechModel {
-    const val NAME = "Whisper tiny (many languages)"
-    const val URL_TAR = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.tar.bz2"
-    const val DOWNLOAD_MB = 116
-    const val DISK_MB = 104
-}
-
-sealed interface DownloadState {
-    data object Idle : DownloadState
-    data class Running(val percent: Int) : DownloadState
-    data class Failed(val message: String) : DownloadState
-    data object Done : DownloadState
-}
-
-/** Downloads the speech model and unpacks only the files we need (int8 encoder/decoder + tokens). */
-class ModelStore(ctx: Context) {
-    private val root = File(ctx.filesDir, "models/whisper-tiny")
-    private val _state = MutableStateFlow<DownloadState>(if (installed()) DownloadState.Done else DownloadState.Idle)
-    val state: StateFlow<DownloadState> = _state
-
-    fun installed() = encoder().exists() && decoder().exists() && tokens().exists()
-    fun encoder() = File(root, "tiny-encoder.int8.onnx")
-    fun decoder() = File(root, "tiny-decoder.int8.onnx")
-    fun tokens() = File(root, "tiny-tokens.txt")
-
-    fun delete() { root.deleteRecursively(); _state.value = DownloadState.Idle }
-
-    private class Counting(i: InputStream, val onBytes: (Long) -> Unit) : FilterInputStream(i) {
-        var n = 0L
-        override fun read(): Int = super.read().also { if (it >= 0) { n++; onBytes(n) } }
-        override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also { if (it > 0) { n += it; onBytes(n) } }
-    }
-
-    suspend fun download() = withContext(Dispatchers.IO) {
-        if (_state.value is DownloadState.Running) return@withContext
-        _state.value = DownloadState.Running(0)
-        val tmp = File(root.parentFile, "tmp-" + UUID.randomUUID())
-        try {
-            tmp.mkdirs()
-            val conn = URL(SpeechModel.URL_TAR).openConnection()
-            conn.connectTimeout = 20_000; conn.readTimeout = 30_000
-            val total = conn.contentLengthLong.takeIf { it > 0 } ?: (SpeechModel.DOWNLOAD_MB * 1_048_576L)
-            var lastPct = -1
-            val counting = Counting(conn.getInputStream().buffered(1 shl 16)) { n ->
-                val p = (n * 100 / total).toInt().coerceIn(0, 99)
-                if (p != lastPct) { lastPct = p; _state.value = DownloadState.Running(p) }
-            }
-            TarArchiveInputStream(BZip2CompressorInputStream(counting)).use { tar ->
-                while (true) {
-                    val e = tar.nextEntry ?: break
-                    if (e.isDirectory) continue
-                    val name = e.name.substringAfterLast('/')
-                    if (!(name.contains("int8") || name.endsWith("tokens.txt"))) continue
-                    File(tmp, name).outputStream().use { o -> tar.copyTo(o) }
-                }
-            }
-            val ok = File(tmp, "tiny-encoder.int8.onnx").exists() && File(tmp, "tiny-decoder.int8.onnx").exists() && File(tmp, "tiny-tokens.txt").exists()
-            if (!ok) throw IllegalStateException("model files missing in archive")
-            root.deleteRecursively()
-            root.parentFile?.mkdirs()
-            if (!tmp.renameTo(root)) throw IllegalStateException("could not move model into place")
-            _state.value = DownloadState.Done
-        } catch (e: Exception) {
-            tmp.deleteRecursively()
-            _state.value = DownloadState.Failed("ST-03: The speech model did not download (${e.javaClass.simpleName}). Check your internet and tap Download again.")
-        }
-    }
-}
-
 /** Offline speech-to-text with sherpa-onnx (Whisper tiny). Not touched by JVM tests: it loads native libraries. */
-class SherpaStt(private val models: ModelStore) {
+class SherpaStt(private val modelFor: () -> ModelStore) {
+    private val models get() = modelFor()
     private var rec: OfflineRecognizer? = null
     private var recLang: String? = null
+    private var recModel: String? = null
+
+    /** Loads the model now (used by the bench to time it). */
+    fun warmUp(lang: String = "en") { recognizer(lang) }
+
+    @Synchronized fun unload() { rec?.release(); rec = null; recLang = null; recModel = null }
 
     val ready get() = models.installed()
 
     @Synchronized
     private fun recognizer(lang: String): OfflineRecognizer {
         if (!models.installed()) throw IllegalStateException(Errors.STT_MODEL)
-        if (rec == null || recLang != lang) {
+        if (rec == null || recLang != lang || recModel != models.spec.id) {
             rec?.release()
             val cfg = OfflineRecognizerConfig(
                 featConfig = FeatureConfig(sampleRate = 16000, featureDim = 80),
@@ -121,6 +48,7 @@ class SherpaStt(private val models: ModelStore) {
             )
             rec = OfflineRecognizer(config = cfg)
             recLang = lang
+            recModel = models.spec.id
         }
         return rec!!
     }
@@ -167,7 +95,21 @@ class Tts(private val ctx: Context) {
         }
     }
 
-    suspend fun speak(text: String, lang: String) {
+    /** Milliseconds from asking to speak until the engine reports the first audio started (bench). */
+    suspend fun firstAudioLatencyMs(text: String, lang: String): Long {
+        var started = 0L
+        val t0 = System.nanoTime()
+        speak(text, lang) { if (started == 0L) started = System.nanoTime() }
+        return (started - t0) / 1_000_000
+    }
+
+    /** True when the default voice for [lang] needs the network (then it is not an offline test). */
+    suspend fun voiceNeedsNetwork(lang: String): Boolean? {
+        val t = engine(); t.setLanguage(Locale.forLanguageTag(lang))
+        return t.voice?.isNetworkConnectionRequired
+    }
+
+    suspend fun speak(text: String, lang: String, onStart: (() -> Unit)? = null) {
         val t = engine()
         val r = t.setLanguage(Locale.forLanguageTag(lang))
         if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED)
@@ -175,7 +117,7 @@ class Tts(private val ctx: Context) {
         suspendCancellableCoroutine { c ->
             val id = UUID.randomUUID().toString()
             t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {}
+                override fun onStart(utteranceId: String?) { if (utteranceId == id) onStart?.invoke() }
                 override fun onDone(utteranceId: String?) { if (utteranceId == id && c.isActive) c.resume(Unit) }
                 @Deprecated("Deprecated in Java") override fun onError(utteranceId: String?) { if (utteranceId == id && c.isActive) c.resume(Unit) }
             })

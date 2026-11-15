@@ -48,6 +48,33 @@ class LinkControllerTest {
         assertEquals(Message.TrCfg("en", "fr"), watch.received[3])
     }
 
+    @Test fun nothingIsSentBeforeTheLinkIsSecure() {
+        link.onConnecting()
+        link.onReady(247, secure = false) // not bonded yet
+        assertEquals(LinkPhase.CONNECTING, link.phase.value)
+        link.send(Message.FindWatch)
+        assertTrue(watch.received.isEmpty())
+        link.onReady(247, secure = true)
+        assertEquals(LinkPhase.CONNECTED, link.phase.value)
+        assertEquals("Time", watch.types().first())
+    }
+
+    @Test fun pttOffCarriesBlockCount() {
+        val b = javaClass.getResourceAsStream("/link_vectors.json")!!.readBytes().decodeToString()
+        val hex = Regex("\"([0-9a-f]{266})\"").findAll(b).map { it.groupValues[1] }.toList()
+        val blocks = hex.map { h -> ByteArray(h.length / 2) { h.substring(2 * it, 2 * it + 2).toInt(16).toByte() } }
+        var clip: PttClip? = null
+        link.onPttClip = { clip = it }
+        link.onReady(247)
+        watch.say(Message.Ptt("me", true, 16000, "ima-adpcm"))
+        watch.audio(blocks[0])
+        watch.say(Message.Ptt("me", false, 16000, "ima-adpcm", 2))
+        assertFalse(clip!!.complete) // one block still missing
+        watch.audio(blocks[1])
+        assertTrue(clip!!.complete)
+        assertEquals(2, clip!!.expectedBlocks)
+    }
+
     @Test fun hourlyStepsRequest() {
         link.onReady(247)
         watch.received.clear()

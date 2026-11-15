@@ -17,6 +17,7 @@
 #include "app.h"
 #include "hw.h"
 #include "link.h"
+#include "ble.h"
 
 static bool inter(const lv_area_t *a, const lv_area_t *b)
 {
@@ -242,6 +243,7 @@ static void cmd_labels(void)
     bsp_display_lock(0);
     printf("CMD labels:");
     print_labels(lv_screen_active(), 0);
+    print_labels(lv_layer_top(), 0);             // overlays: pairing code, Allow/Deny prompts, toasts
     printf("\n");
     bsp_display_unlock();
 }
@@ -382,6 +384,8 @@ static void run_line(char *l)
         printf("CMD rec start=%s file=%s frames=%lu dropped=%lu rate=%lu marks=%d\n", ok ? "ok" : "FAIL", ok ? f : "-",
                (unsigned long)fr, (unsigned long)dr, (unsigned long)rt, nm);
     } else if (!strncmp(l, "link ", 5)) { link_inject(l + 5); printf("CMD link injected\n"); }   // act as the phone (tests)
+    else if (!strncmp(l, "linkb ", 6)) { link_inject_untrusted(l + 6); printf("CMD linkb injected\n"); }  // as if over BLE (confirm tests)
+    else if (!strncmp(l, "secstate", 8)) printf("CMD secstate bonded=%d pairing_open=%d chronos=%d link_ready=%d\n", ble_bonded(), ble_pair_window_open(), hw_pref_get("chronos", 0), link_ready());
     else if (!strncmp(l, "adpcmtest", 9)) { static char hx[600]; link_adpcm_selftest(hx, sizeof(hx)); printf("CMD adpcm %s\n", hx); }
     else if (sscanf(l, "buzz %d", &n) == 1) { hw_buzz(n); printf("CMD buzz %d\n", n); }
     else if (!strncmp(l, "raisetest", 9)) printf("CMD raisetest fails=%d\n", hw_raise_selftest());

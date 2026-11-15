@@ -574,3 +574,11 @@ bool script_remove(const char *name)
     bsp_display_unlock();
     return ok;
 }
+const char *script_put_pending(void) { return s_put ? s_put_name : ""; }
+void script_put_abort(void)               // install refused on the watch: drop the half-written file
+{
+    if (!s_put) return;
+    fclose(s_put); s_put = NULL;
+    char tmp[64]; snprintf(tmp, sizeof(tmp), APP_DIR "/%s.tmp", s_put_name);
+    remove(tmp);
+}

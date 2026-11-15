@@ -78,18 +78,6 @@ data class NoteRecord(
 
 /** Parses the text an LLM returns for our summary prompt. */
 object LlmFormat {
-    fun prompt(transcript: String) = """
-You summarise meeting transcripts. Reply in exactly this format and nothing else:
-TITLE: <at most 6 words>
-SUMMARY: <2 to 3 short sentences>
-ACTIONS:
-- <one action item per line, include who and when if said>
-(write "- none" if there are no action items)
-
-Transcript:
-${transcript.take(6000)}
-""".trimIndent()
-
     fun parse(reply: String, engine: String): Summary? {
         val title = Regex("(?im)^\\s*TITLE:\\s*(.+)$").find(reply)?.groupValues?.get(1)?.trim()
         val summary = Regex("(?is)SUMMARY:\\s*(.+?)(?=\\n\\s*ACTIONS:|\\z)").find(reply)?.groupValues?.get(1)?.trim()

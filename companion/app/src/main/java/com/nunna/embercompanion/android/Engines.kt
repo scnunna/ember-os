@@ -5,42 +5,39 @@ import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
-import android.net.wifi.WifiNetworkSpecifier
+import android.os.Debug
 import android.view.KeyEvent
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.metadata.Device
 import androidx.health.connect.client.records.metadata.Metadata
-import com.google.android.gms.tasks.Task
-import com.google.mediapipe.tasks.genai.llminference.LlmInference
-import com.google.mlkit.common.model.DownloadConditions
-import com.google.mlkit.common.model.RemoteModelManager
-import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.TranslateRemoteModel
-import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.TranslatorOptions
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
+import com.google.ai.edge.litertlm.Message
+import com.nunna.embercompanion.assistant.Prompts
 import com.nunna.embercompanion.protocol.ExtractiveSummarizer
 import com.nunna.embercompanion.protocol.LlmFormat
+import com.nunna.embercompanion.protocol.LlmRun
 import com.nunna.embercompanion.protocol.StepsRecordSpec
 import com.nunna.embercompanion.protocol.Summarizer
 import com.nunna.embercompanion.protocol.Summary
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
-import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
-import java.time.Instant
 import java.time.ZoneOffset
-import java.util.Locale
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 // ------------------------------------------------------------------ Health Connect
 
@@ -73,122 +70,103 @@ object HealthSteps {
     }
 }
 
-// ------------------------------------------------------------------ Translation (ML Kit, on device)
+// ------------------------------------------------------------------ On-device LLM (LiteRT-LM, Gemma 4 E2B)
 
-object Languages {
-    /** Languages ML Kit can translate offline, as codes. */
-    val codes: List<String> by lazy { TranslateLanguage.getAllLanguages().sortedBy { name(it) } }
+/** Which processor runs the model. */
+enum class LlmBackend { CPU, GPU }
 
-    fun name(code: String): String =
-        Locale.forLanguageTag(code).getDisplayLanguage(Locale.ENGLISH).replaceFirstChar { it.uppercase() }.ifBlank { code }
+/** Translation backend. The shipped one is the on-device Gemma model (ML Kit was dropped: its packs need INTERNET in this app). */
+fun interface Translator {
+    suspend fun translate(text: String, from: String, to: String): String
 }
 
-suspend fun <T> Task<T>.await(): T = suspendCancellableCoroutine { c ->
-    addOnSuccessListener { c.resume(it) }
-    addOnFailureListener { c.resumeWithException(it) }
-}
+/**
+ * Wraps the LiteRT-LM engine. The engine is big (about 1.5 GB of RAM while loaded), so it is loaded on first use and
+ * dropped again after two idle minutes. Everything runs on the phone.
+ */
+@OptIn(ExperimentalApi::class)
+class LlmRuntime(private val ctx: Context, private val modelPath: () -> String?) {
+    private val lock = Mutex()
+    private var engine: Engine? = null
+    private var engineBackend: LlmBackend? = null
+    private var idleJob: Job? = null
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-class TranslateEngine {
-    private val manager by lazy { RemoteModelManager.getInstance() }
+    private fun backendObj(b: LlmBackend): Backend = if (b == LlmBackend.GPU) Backend.GPU() else Backend.CPU()
 
-    suspend fun downloaded(): Set<String> =
-        manager.getDownloadedModels(TranslateRemoteModel::class.java).await().map { it.language }.toSet()
-
-    /** Explicit download of one language pack (about 30 MB each). */
-    suspend fun download(code: String) {
-        manager.download(TranslateRemoteModel.Builder(code).build(), DownloadConditions.Builder().build()).await()
+    private fun open(path: String, backend: LlmBackend): Engine {
+        val e = Engine(EngineConfig(modelPath = path, backend = backendObj(backend), cacheDir = ctx.cacheDir.absolutePath))
+        e.initialize()
+        return e
     }
 
-    suspend fun delete(code: String) {
-        manager.deleteDownloadedModel(TranslateRemoteModel.Builder(code).build()).await()
+    private fun text(m: Message): String =
+        m.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
+
+    /** Runs one prompt (instructions in [system], task + untrusted data in [user]). */
+    suspend fun generate(system: String, user: String, backend: LlmBackend = LlmBackend.CPU): String = lock.withLock {
+        val path = modelPath() ?: throw IllegalStateException(Errors.LLM_MODEL)
+        withContext(Dispatchers.Default) {
+            idleJob?.cancel()
+            try {
+                if (engine == null || engineBackend != backend) { engine?.close(); engine = open(path, backend); engineBackend = backend }
+                engine!!.createConversation(ConversationConfig(systemInstruction = Contents.of(system))).use { c -> text(c.sendMessage(user)) }
+            } catch (e: Throwable) {
+                runCatching { engine?.close() }; engine = null
+                throw IllegalStateException(Errors.LLM_RUN)
+            } finally {
+                idleJob = scope.launch { delay(120_000); lock.withLock { runCatching { engine?.close() }; engine = null } }
+            }
+        }
     }
 
-    /** Translates using only packs that are already on the phone. Fails (so the app can show TR-06) if a pack is missing. */
-    suspend fun translate(text: String, from: String, to: String): String {
-        if (from == to) return text
-        val have = downloaded()
-        val needed = setOf(from, to)
-        if (!have.containsAll(needed)) throw IllegalStateException(Errors.TR_PACK)
-        val t = Translation.getClient(TranslatorOptions.Builder().setSourceLanguage(from).setTargetLanguage(to).build())
-        try {
-            return t.translate(text).await()
-        } finally {
-            t.close()
+    fun release() { runCatching { engine?.close() }; engine = null }
+
+    /** One timed run for the bench screen. Loads a fresh engine each time so the load time is real. Throws on failure. */
+    suspend fun benchRun(backend: LlmBackend, prompt: String, maxTokens: Int = 2048): LlmRun = lock.withLock {
+        val path = modelPath() ?: throw IllegalStateException(Errors.LLM_MODEL)
+        withContext(Dispatchers.Default) {
+            release()
+            ExperimentalFlags.enableBenchmark = true
+            val t0 = System.nanoTime()
+            val e = Engine(EngineConfig(modelPath = path, backend = backendObj(backend), maxNumTokens = maxTokens, cacheDir = ctx.cacheDir.absolutePath))
+            try {
+                e.initialize()
+                val load = (System.nanoTime() - t0) / 1e9
+                e.createConversation().use { c ->
+                    c.sendMessage(prompt)
+                    val b = c.getBenchmarkInfo()
+                    val ram = Debug.MemoryInfo().also { Debug.getMemoryInfo(it) }.totalPss / 1024.0
+                    LlmRun(load, b.timeToFirstTokenInSecond, b.lastPrefillTokensPerSecond, b.lastDecodeTokensPerSecond, b.lastPrefillTokenCount, b.lastDecodeTokenCount, ram)
+                }
+            } finally {
+                runCatching { e.close() }
+            }
         }
     }
 }
 
-// ------------------------------------------------------------------ Optional LLM summary (MediaPipe)
+class LlmTranslator(private val llm: LlmRuntime) : Translator {
+    override suspend fun translate(text: String, from: String, to: String): String {
+        if (from == to) return text
+        val p = Prompts.translate(text, Languages.name(from), Languages.name(to))
+        return Prompts.cleanTranslation(llm.generate(p.system, p.user))
+    }
+}
 
-/** Uses an LLM file the user imported (.task / .litertlm). Falls back to the simple summarizer if it cannot run. */
-class LlmSummarizer(private val ctx: Context, private val modelPath: String, private val fallback: Summarizer = ExtractiveSummarizer()) : Summarizer {
-    override val name = "AI model (" + File(modelPath).name + ")"
-    /** Set when the last run fell back to the simple summarizer. */
+/** Summaries from the on-device model. Falls back to the simple summarizer if the model cannot run. */
+class LlmSummarizer(private val llm: LlmRuntime, private val fallback: Summarizer = ExtractiveSummarizer()) : Summarizer {
+    override val name = "On-device AI (Gemma)"
     @Volatile var lastError: String? = null
 
-    override suspend fun summarize(transcript: String): Summary = withContext(Dispatchers.Default) {
+    override suspend fun summarize(transcript: String): Summary {
         lastError = null
-        try {
-            val opts = LlmInference.LlmInferenceOptions.builder().setModelPath(modelPath).setMaxTokens(1536).build()
-            val llm = LlmInference.createFromOptions(ctx, opts)
-            try {
-                val reply = llm.generateResponse(LlmFormat.prompt(transcript))
-                LlmFormat.parse(reply, name) ?: throw IllegalStateException("unreadable reply")
-            } finally {
-                llm.close()
-            }
+        return try {
+            val p = Prompts.summarize(transcript)
+            LlmFormat.parse(llm.generate(p.system, p.user), name) ?: throw IllegalStateException("unreadable reply")
         } catch (e: Throwable) {
             lastError = Errors.LLM_FAIL
             fallback.summarize(transcript)
-        }
-    }
-}
-
-// ------------------------------------------------------------------ Watch Wi-Fi file download
-
-class WifiFetcher(private val ctx: Context) {
-    /**
-     * Joins the watch hotspot (only for this app), downloads http://ip/f/name into [dest], then lets go of the network.
-     * The download goes through the joined network object, which does the same job as binding the whole process to it.
-     */
-    suspend fun download(ssid: String, pass: String, ip: String, name: String, dest: File, onProgress: (Int) -> Unit): File {
-        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val spec = WifiNetworkSpecifier.Builder().setSsid(ssid).setWpa2Passphrase(pass).build()
-        val req = NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).setNetworkSpecifier(spec).build()
-        lateinit var cb: ConnectivityManager.NetworkCallback
-        try {
-            val net: Network = suspendCancellableCoroutine { c ->
-                cb = object : ConnectivityManager.NetworkCallback() {
-                    override fun onAvailable(network: Network) { if (c.isActive) c.resume(network) }
-                    override fun onUnavailable() { if (c.isActive) c.resumeWithException(IllegalStateException(Errors.WIFI_JOIN)) }
-                }
-                cm.requestNetwork(req, cb, 30_000)
-                c.invokeOnCancellation { runCatching { cm.unregisterNetworkCallback(cb) } }
-            }
-            return withContext(Dispatchers.IO) {
-                dest.parentFile?.mkdirs()
-                val tmp = File(dest.path + ".part")
-                val conn = net.openConnection(URL("http://$ip/f/$name")) as HttpURLConnection
-                conn.connectTimeout = 10_000; conn.readTimeout = 20_000
-                if (conn.responseCode != 200) throw IllegalStateException(Errors.WIFI_GET)
-                val total = conn.contentLengthLong
-                conn.inputStream.use { i ->
-                    tmp.outputStream().use { o ->
-                        val buf = ByteArray(32 * 1024)
-                        var n = 0L
-                        while (true) {
-                            val r = i.read(buf)
-                            if (r < 0) break
-                            o.write(buf, 0, r); n += r
-                            if (total > 0) onProgress((n * 100 / total).toInt())
-                        }
-                    }
-                }
-                if (!tmp.renameTo(dest)) throw IllegalStateException(Errors.WIFI_GET)
-                dest
-            }
-        } finally {
-            runCatching { cm.unregisterNetworkCallback(cb) }
         }
     }
 }

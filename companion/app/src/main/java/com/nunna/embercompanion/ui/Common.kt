@@ -7,10 +7,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
-enum class Screen { HOME, NOTIFS, STEPS, APPS, NOTES, NOTE, TRANSLATE, PRACTICE, SETTINGS }
+enum class Screen { HOME, NOTIFS, STEPS, APPS, NOTES, NOTE, TRANSLATE, PRACTICE, SETTINGS, BENCH }
 
 /** A page with a title bar and a back arrow. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -44,4 +46,23 @@ fun InfoCard(title: String, content: @Composable ColumnScope.() -> Unit) {
             content()
         }
     }
+}
+
+/** S6: shows exactly what a side-effect action will do and waits for the user's tap. */
+@Composable
+fun ConfirmDialog() {
+    val p by com.nunna.embercompanion.android.AppGraph.confirm.collectAsState()
+    val pending = p ?: return
+    AlertDialog(
+        onDismissRequest = { pending.answer.complete(false) },
+        title = { Text("Please confirm") },
+        text = {
+            Column {
+                Text(pending.spec.description)
+                pending.call.args.forEach { (k, v) -> Text("$k: $v", style = MaterialTheme.typography.bodySmall) }
+            }
+        },
+        confirmButton = { TextButton(onClick = { pending.answer.complete(true) }) { Text("Yes, do it") } },
+        dismissButton = { TextButton(onClick = { pending.answer.complete(false) }) { Text("No") } },
+    )
 }

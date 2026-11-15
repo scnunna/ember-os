@@ -22,6 +22,8 @@ sealed interface Message {
     data object AppEnd : Message
     data class AppRm(val name: String) : Message
     data object FindWatch : Message
+    /** Ask the watch to delete a recording; it only does so if [s] matches the file size. */
+    data class RecDel(val n: String, val s: Long) : Message
     data object PracticeReq : Message
 
     // ---- watch -> phone (EVT) ----
@@ -33,15 +35,17 @@ sealed interface Message {
     data class RecFile(val n: String, val s: Long, val marks: List<Long>)
     data class Recs(val files: List<RecFile>) : Message
     /** Either (ssid, pass, ip) or [err]. */
-    data class Wifi(val ssid: String, val pass: String, val ip: String, val err: String?) : Message
-    data class Ptt(val side: String, val on: Boolean, val rate: Int, val codec: String) : Message
+    data class Wifi(val ssid: String, val pass: String, val ip: String, val err: String?, val token: String = "") : Message
+    /** [blocks] = number of AUDIO blocks sent (only meaningful on `off`), -1 if the watch did not say. */
+    data class Ptt(val side: String, val on: Boolean, val rate: Int, val codec: String, val blocks: Int = -1) : Message
     data class PracticeSession(val date: Int, val start: String, val min: Int, val tool: String, val bpmMax: Int, val changes: Int)
     data class Practice(val sessions: List<PracticeSession>) : Message
     data class FindPhone(val on: Boolean) : Message
     data class MusicCmd(val cmd: String) : Message
     data class Apps(val list: List<String>) : Message
     data class AppOk(val name: String) : Message
-    data class Err(val msg: String) : Message
+    /** [re] = the `t` of the message that failed, if the watch says. */
+    data class Err(val msg: String, val re: String = "") : Message
 
     /** A `t` value we do not know. Ignored by receivers, kept for logging. */
     data class Unknown(val t: String) : Message
@@ -79,6 +83,7 @@ object MessageCodec {
         Message.AppEnd -> obj("app_end")
         is Message.AppRm -> obj("app_rm") { put("name", m.name) }
         Message.FindWatch -> obj("find_watch")
+        is Message.RecDel -> obj("rec_del") { put("n", m.n); put("s", m.s) }
         Message.PracticeReq -> obj("practice_req")
         is Message.Hello -> obj("hello") {
             put("fw", m.fw); put("name", m.name); put("batt", m.batt); put("mv", m.mv); put("usb", m.usb); put("steps", m.steps)
@@ -94,9 +99,9 @@ object MessageCodec {
             }))
         }
         is Message.Wifi -> obj("wifi") {
-            if (m.err != null) put("err", m.err) else { put("ssid", m.ssid); put("pass", m.pass); put("ip", m.ip) }
+            if (m.err != null) put("err", m.err) else { put("ssid", m.ssid); put("pass", m.pass); put("ip", m.ip); if (m.token.isNotEmpty()) put("token", m.token) }
         }
-        is Message.Ptt -> obj("ptt") { put("side", m.side); put("on", m.on); put("rate", m.rate); put("codec", m.codec) }
+        is Message.Ptt -> obj("ptt") { put("side", m.side); put("on", m.on); put("rate", m.rate); put("codec", m.codec); if (m.blocks >= 0) put("blocks", m.blocks) }
         is Message.Practice -> obj("practice") {
             put("sessions", JsonArray(m.sessions.map { s ->
                 buildJsonObject {
@@ -109,7 +114,7 @@ object MessageCodec {
         is Message.MusicCmd -> obj("music_cmd") { put("cmd", m.cmd) }
         is Message.Apps -> obj("apps") { put("list", strs(m.list)) }
         is Message.AppOk -> obj("app_ok") { put("name", m.name) }
-        is Message.Err -> obj("err") { put("msg", m.msg) }
+        is Message.Err -> obj("err") { put("msg", m.msg); if (m.re.isNotEmpty()) put("re", m.re) }
         is Message.Unknown -> obj(m.t)
     }
 
@@ -136,6 +141,7 @@ object MessageCodec {
                 "app_end" -> Message.AppEnd
                 "app_rm" -> Message.AppRm(o.str("name") ?: "")
                 "find_watch" -> Message.FindWatch
+                "rec_del" -> Message.RecDel(o.str("n") ?: "", o.long("s"))
                 "practice_req" -> Message.PracticeReq
                 "hello" -> Message.Hello(o.str("fw") ?: "", o.str("name") ?: "", o.int("batt"), o.int("mv"), o.bool("usb"), o.int("steps"))
                 "steps" -> Message.Steps(o.arr("days").map { Message.StepDay(it.int("date"), it.int("steps")) })
@@ -144,8 +150,8 @@ object MessageCodec {
                 "recs" -> Message.Recs(o.arr("files").map { f ->
                     Message.RecFile(f.str("n") ?: "", f.long("s"), (f["marks"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.longOrNull } ?: emptyList())
                 })
-                "wifi" -> Message.Wifi(o.str("ssid") ?: "", o.str("pass") ?: "", o.str("ip") ?: "", o.str("err"))
-                "ptt" -> Message.Ptt(o.str("side") ?: "me", o.bool("on"), if (o.containsKey("rate")) o.int("rate") else 16000, o.str("codec") ?: "ima-adpcm")
+                "wifi" -> Message.Wifi(o.str("ssid") ?: "", o.str("pass") ?: "", o.str("ip") ?: "", o.str("err"), o.str("token") ?: "")
+                "ptt" -> Message.Ptt(o.str("side") ?: "me", o.bool("on"), if (o.containsKey("rate")) o.int("rate") else 16000, o.str("codec") ?: "ima-adpcm", if (o.containsKey("blocks")) o.int("blocks") else -1)
                 "practice" -> Message.Practice(o.arr("sessions").map {
                     Message.PracticeSession(it.int("date"), it.str("start") ?: "", it.int("min"), it.str("tool") ?: "", it.int("bpm_max"), it.int("changes"))
                 })
@@ -153,7 +159,7 @@ object MessageCodec {
                 "music_cmd" -> Message.MusicCmd(o.str("cmd") ?: "")
                 "apps" -> Message.Apps(o.strList("list"))
                 "app_ok" -> Message.AppOk(o.str("name") ?: "")
-                "err" -> Message.Err(o.str("msg") ?: "")
+                "err" -> Message.Err(o.str("msg") ?: "", o.str("re") ?: "")
                 else -> Message.Unknown(t)
             }
         } catch (e: Exception) {

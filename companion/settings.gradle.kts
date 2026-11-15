@@ -15,3 +15,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "EmberCompanion"
 include(":app")
+include(":shared")
+include(":gateway")

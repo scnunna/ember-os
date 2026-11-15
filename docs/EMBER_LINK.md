@@ -85,5 +85,22 @@ That makes 133 bytes per block, 256 samples, 16 ms at 16 kHz, so 62.5 blocks/s a
 - **`steps.date`** is the local date as yyyymmdd; today's count is partial. `practice` sessions are unique by `date` + `start`.
 - **`weather`** is optional. The phone app doesn't send it yet: there is no offline weather source, and the owner prefers no third-party servers.
 
+## Security (v1.2, 2026-11-14): required, not optional
+- **Pairing:** LE Secure Connections with bonding and MITM protection, method **Passkey Entry**. The watch shows a random 6-digit code; the user types it on the phone (Android's system pairing dialog). Legacy pairing is refused.
+- **One phone only:** the watch keeps a single bond. A new phone can pair only when the user opens **Settings → Pair new phone** on the watch. That deletes the old bond and opens a 2-minute pairing window. Outside the window, pairing requests are rejected.
+- **Every Ember Link characteristic needs an encrypted + authenticated link.** CMD writes and CCCD subscriptions (EVT, AUDIO) on an unencrypted link fail with *Insufficient Authentication* (0x05), which makes Android start pairing. The watch never notifies EVT or AUDIO unless the link is encrypted, authenticated and bonded.
+- **Chronos service:** off by default (it has no authentication). Settings → *Chronos* turns it on, which takes effect after a reboot.
+- **Confirm on the watch** (S3). These need a tap on the watch's *Allow* button within 30 s; otherwise the reply is `{"t":"err","re":<t>,"msg":"denied on watch"}`:
+  - `app_end` (install)
+  - `app_rm`
+  - `wifi_req`
+  Messages injected over the USB dev shell skip this, because USB means physical access.
+- **Wi-Fi (S4):**
+  - Every hotspot start gets a **new random 12-character password** and a **new 16-hex-character access token**.
+  - `wifi` reply: `{"t":"wifi","ssid","pass","ip","token"}`.
+  - Every HTTP endpoint needs `?k=<token>` (or the header `X-Ember-Key: <token>`); otherwise it returns 403.
+  - The token is only ever sent over the encrypted link, or shown on the watch screen.
+- **New message `rec_del`** `{"n": name, "s": size}`: the watch deletes the recording (and its .marks) only if the size matches. The phone sends it after a verified download. Reply: `recs`.
+
 ## Versioning
 `hello.fw` is the firmware version. New fields and new `t` values are always optional. Removing or redefining a field needs a v2 service UUID.
