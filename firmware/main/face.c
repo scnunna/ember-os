@@ -110,7 +110,12 @@ void face_tick(void)
             uint32_t s = rec_seconds();
             snprintf(b, sizeof(b), LV_SYMBOL_AUDIO "  REC %02lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
             lv_label_set_text(s_rec, b);
-        } else lv_label_set_text(s_rec, "");
+        } else {
+            // privacy: whenever anything is listening, the face says who (Amber, Tuner, Sound, Translate)
+            char who[16];
+            if (hw_mic_owner(who, sizeof(who), NULL, 0, NULL, NULL)) { snprintf(b, sizeof(b), LV_SYMBOL_AUDIO "  %s listening", who); lv_label_set_text(s_rec, b); }
+            else lv_label_set_text(s_rec, "");
+        }
 
         if (lv_tick_elaps(s_last_batt) > 15000 || s_last_batt == 0) {
             s_last_batt = now ? now : 1;

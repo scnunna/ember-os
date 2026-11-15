@@ -78,6 +78,7 @@ void buttons_start(void);
 void launcher_btn_short(void);
 void launcher_btn_long(void);
 void launcher_btn_double(void);
+void launcher_btn_triple(void);
 
 // ---- watch face widgets (face.c) ----
 void face_create(lv_obj_t *scr);
@@ -91,6 +92,8 @@ rec_mode_t rec_mode(void);
 int      rec_level(void);        // 0..100 live input level
 bool     rec_start(rec_mode_t m);
 void     rec_stop(void);
+bool     rec_pause(bool on);     // pause hands the mic to someone else; the file stays open, resume continues it
+bool     rec_paused(void);
 bool     rec_toggle(rec_mode_t m);
 const char *rec_last_file(void);
 

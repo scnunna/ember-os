@@ -388,6 +388,23 @@ static void run_line(char *l)
     } else if (!strncmp(l, "link ", 5)) { link_inject(l + 5); printf("CMD link injected\n"); }   // act as the phone (tests)
     else if (!strncmp(l, "linkb ", 6)) { link_inject_untrusted(l + 6); printf("CMD linkb injected\n"); }  // as if over BLE (confirm tests)
     else if (!strncmp(l, "devices", 7)) devices_print();
+    else if (!strncmp(l, "micstate", 8)) {
+        char who[16] = "", what[40] = ""; uint32_t secs = 0, rate = 0;
+        bool busy = hw_mic_owner(who, sizeof(who), what, sizeof(what), &secs, &rate);
+        printf("CMD micstate busy=%d who=%s what=%s secs=%lu rate=%lu rec=%d paused=%d ptt=%d shared=%d\n", busy, who, what,
+               (unsigned long)secs, (unsigned long)rate, rec_active(), rec_paused(), link_ptt_active(), link_ptt_shared());
+    } else if (sscanf(l, "btn %d", &n) == 1) {                 // tests: 1 short, 2 double, 3 triple press
+        if (n == 2) launcher_btn_double(); else if (n == 3) launcher_btn_triple(); else launcher_btn_short();
+        printf("CMD btn %d state=%d app=%d\n", n, launcher_state(), launcher_cur());
+    } else if (sscanf(l, "recstart %d", &n) == 1) { printf("CMD recstart %d ok=%d\n", n, rec_start(n ? REC_MUSIC : REC_MEETING)); }
+    else if (!strncmp(l, "recstop", 7)) { rec_stop(); printf("CMD recstop file=%s\n", rec_last_file()); }
+    else if (!strncmp(l, "taptest", 7)) {                      // a second listener gets a copy of the owner's audio
+        static int16_t buf[512]; int got = 0; bool ok = hw_mic_tap_open(16000);
+        int64_t t0 = esp_timer_get_time();
+        while (ok && esp_timer_get_time() - t0 < 1000000) got += hw_mic_tap_read(buf, 512, 100);
+        if (ok) hw_mic_tap_close();
+        printf("CMD taptest open=%d frames=%d\n", ok, got);
+    } else if (!strncmp(l, "recpause", 8)) { bool on = l[8] != '0'; printf("CMD recpause %d ok=%d\n", on, rec_pause(on)); }
     else if (!strncmp(l, "schedreset", 10)) { sched_reset(); sched_test_minute(-1); printf("CMD schedreset\n"); }
     else if (!strncmp(l, "sched", 5)) sched_print();
     else if (sscanf(l, "citest %d", &n) == 1) { sched_test_minute(n); vTaskDelay(pdMS_TO_TICKS(300)); printf("CMD citest %d\n", n); }

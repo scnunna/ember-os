@@ -123,11 +123,22 @@ static void writer_task(void *arg)
 }
 
 // Capture: reads the mic continuously (never blocks on storage) and feeds the stream buffer.
+static volatile bool s_pause_req, s_paused;
+static bool mic_open_for_rec(void)
+{
+    return hw_mic_open_as(s_rate, s_mode == REC_MUSIC ? 18.0f : 30.0f, "Recorder", s_mode == REC_MUSIC ? "music recording" : "meeting recording");
+}
 static void rec_task(void *arg)
 {
     EXT_RAM_BSS_ATTR static int16_t pcm[1024];
     s_cap_t0 = esp_timer_get_time();
     while (!s_stop) {
+        // pause: hand the mic to someone else (Amber) without closing the file; resume reopens it
+        if (s_pause_req && !s_paused) { hw_mic_close(); s_level = 0; s_paused = true; }
+        if (s_paused) {
+            if (!s_pause_req && mic_open_for_rec()) { s_paused = false; rec_mark(); }   // a bookmark where it resumed
+            else { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+        }
         int n = hw_mic_read_mono(pcm, 1024);
         if (n <= 0) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
         s_frames += n;
@@ -138,11 +149,21 @@ static void rec_task(void *arg)
         s_level = lv < 0 ? 0 : (lv > 100 ? 100 : lv);
         if (xStreamBufferSend(s_sb, pcm, n * 2, 0) != (size_t)(n * 2)) s_dropped += n;
     }
-    hw_mic_close();
+    if (!s_paused) hw_mic_close();
+    s_paused = s_pause_req = false;
     s_level = 0;
     s_cap_done = true;
     vTaskDelete(NULL);
 }
+
+bool rec_pause(bool on)
+{
+    if (!s_active) return false;
+    s_pause_req = on;
+    for (int i = 0; i < 100 && s_paused != on; i++) vTaskDelay(pdMS_TO_TICKS(10));
+    return s_paused == on;
+}
+bool rec_paused(void) { return s_active && s_paused; }
 
 bool rec_start(rec_mode_t m)
 {
@@ -151,7 +172,9 @@ bool rec_start(rec_mode_t m)
     hw_storage_info(&tot, &fre);
     if (fre < 3ULL * 1024 * 1024) { ESP_LOGE(TAG, "storage full"); return false; }
     s_rate = (m == REC_MUSIC) ? 44100 : 16000;
-    if (!hw_mic_open(s_rate, m == REC_MUSIC ? 18.0f : 30.0f)) return false;
+    s_mode = m;
+    s_pause_req = s_paused = false;
+    if (!mic_open_for_rec()) return false;
 
     char dir[40];
     snprintf(dir, sizeof(dir), "%s/rec", hw_storage_root());

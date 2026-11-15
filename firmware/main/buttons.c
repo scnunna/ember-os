@@ -1,4 +1,5 @@
-// BOOT button (GPIO0): short = back / screen off, double = start/stop recording, long = screen on/off.
+// BOOT button (GPIO0): short = back / screen off, double = talk to Amber, triple = start/stop a meeting recording,
+// long = screen on/off.
 // Interrupt-driven: the task sleeps forever until the button goes down, polls at 10 ms only while a press or a
 // double-click window is in progress, then sleeps again. The same pin wakes the chip from light sleep.
 #include "freertos/FreeRTOS.h"
@@ -21,6 +22,7 @@ static void IRAM_ATTR btn_isr(void *a)
 static void btn_task(void *arg)
 {
     bool was = false, pending = false;
+    int presses = 0;
     int64_t t_down = 0, t_short = 0;
     while (1) {
         bool idle = !was && !pending && gpio_get_level(GPIO_NUM_0);
@@ -33,13 +35,19 @@ static void btn_task(void *arg)
         if (down && !was) t_down = now;
         if (!down && was) {
             int64_t dur = now - t_down;
-            if (dur >= 800) { pending = false; launcher_btn_long(); }
+            if (dur >= 800) { pending = false; presses = 0; launcher_btn_long(); }
             else if (dur > 30) {
-                if (pending && now - t_short < 400) { pending = false; launcher_btn_double(); }
-                else { pending = true; t_short = now; }
+                // count quick presses; act 400 ms after the last one (so a double can still become a triple)
+                if (pending && now - t_short < 400) presses++; else presses = 1;
+                pending = true; t_short = now;
+                if (presses >= 3) { pending = false; presses = 0; launcher_btn_triple(); }
             }
         }
-        if (pending && !down && now - t_short >= 400) { pending = false; launcher_btn_short(); }
+        if (pending && !down && now - t_short >= 400) {
+            pending = false;
+            if (presses == 2) launcher_btn_double(); else launcher_btn_short();
+            presses = 0;
+        }
         was = down;
     }
 }

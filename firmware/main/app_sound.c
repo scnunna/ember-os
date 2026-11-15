@@ -30,7 +30,7 @@ static void snd_task(void *arg)
         s_fft_ready = (dsps_fft2r_init_fc32(NULL, N) == ESP_OK);
         dsps_wind_hann_f32(wind, N);
     }
-    if (!hw_mic_open(RATE, 24.0f)) { s_run = false; s_exit = true; vTaskDelete(NULL); }
+    if (!hw_mic_open_as(RATE, 24.0f, "Sound", "measuring loudness")) { s_run = false; s_exit = true; vTaskDelete(NULL); }
     while (s_run) {
         if (hw_mic_read_mono(pcm, N) != N) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
         double e = 0;

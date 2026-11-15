@@ -71,7 +71,7 @@ static void tuner_task(void *arg)
     EXT_RAM_BSS_ATTR static int16_t pcm[512];
     EXT_RAM_BSS_ATTR static int16_t ring[BUF];
     int filled = 0;
-    if (!hw_mic_open(RATE, 24.0f)) { s_task = NULL; s_exit = true; vTaskDelete(NULL); }
+    if (!hw_mic_open_as(RATE, 24.0f, "Tuner", "listening for notes")) { s_task = NULL; s_exit = true; vTaskDelete(NULL); }
     float hist[5] = {0};
     int hi = 0;
     while (s_run) {

@@ -360,12 +360,25 @@ void launcher_btn_long(void)
     if (s_on) screen_set(false); else launcher_wake();
     bsp_display_unlock();
 }
-void launcher_btn_double(void)
+void amber_double_press(void);
+void launcher_btn_double(void)                 // double press = talk to Amber (again = send)
+{
+    bsp_display_lock(0);
+    launcher_wake();
+    amber_double_press();
+    bsp_display_unlock();
+}
+
+void launcher_btn_triple(void)                 // triple press = start/stop a meeting recording
 {
     bsp_display_lock(0);
     launcher_wake();
     bool was = rec_active();
     if (rec_toggle(REC_MEETING)) ui_msg(was ? "Recording saved" : "Recording started");
-    else ui_msg(was ? "Stop failed" : "Mic busy - close the app using it");
+    else {
+        char who[16], what[40], m[80];
+        if (hw_mic_owner(who, sizeof(who), what, sizeof(what), NULL, NULL)) { snprintf(m, sizeof(m), "Mic in use: %s (%s)", who, what); ui_msg(m); }
+        else ui_msg(was ? "Stop failed" : "Could not start recording");
+    }
     bsp_display_unlock();
 }

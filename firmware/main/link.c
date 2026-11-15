@@ -351,6 +351,8 @@ void link_tr_state(char *me, char *them, char *src, size_t srcn, char *dst, size
 static volatile bool s_ptt, s_ptt_task;
 static char s_ptt_side[8] = "me";
 static char s_ptt_ctx[128];
+static volatile bool s_ptt_tap;                  // sharing a 16 kHz meeting recording's mic instead of owning it
+static volatile int s_ptt_err;                   // why the last start failed: LINK_PTT_*
 bool link_ptt_active(void) { return s_ptt; }
 static void ptt_task(void *a)
 {
@@ -360,7 +362,7 @@ static void ptt_task(void *a)
     uint8_t seq = 0;
     int64_t t0 = esp_timer_get_time();
     while (s_ptt && esp_timer_get_time() - t0 < 30000000LL) {           // 30 s safety cap
-        int n = hw_mic_read_mono(pcm + got, ADPCM_BLOCK_SAMPLES - got);
+        int n = s_ptt_tap ? hw_mic_tap_read(pcm + got, ADPCM_BLOCK_SAMPLES - got, 50) : hw_mic_read_mono(pcm + got, ADPCM_BLOCK_SAMPLES - got);
         if (n <= 0) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
         got += n;
         if (got < ADPCM_BLOCK_SAMPLES) continue;
@@ -372,7 +374,8 @@ static void ptt_task(void *a)
             if (om) ble_gatts_notify_custom(s_conn, link_audio_handle, om);   // a lost block = 16 ms gap (seq tells the phone)
         }
     }
-    hw_mic_close();
+    if (s_ptt_tap) hw_mic_tap_close(); else hw_mic_close();
+    s_ptt_tap = false;
     s_ptt = false;
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "t", "ptt"); cJSON_AddStringToObject(o, "side", s_ptt_side); cJSON_AddBoolToObject(o, "on", false);
@@ -383,9 +386,23 @@ static void ptt_task(void *a)
 }
 bool link_ptt_start_ex(const char *side, const char *ctx_json)
 {
-    if (s_ptt || s_ptt_task || !link_ready()) return false;
-    if (ble_att_mtu(s_conn) < ADPCM_BLOCK_BYTES + 3) { ESP_LOGW(TAG, "MTU %d too small for audio", ble_att_mtu(s_conn)); return false; }
-    if (!hw_mic_open(16000, 30.0f)) return false;
+    if (s_ptt || s_ptt_task) { s_ptt_err = LINK_PTT_MIC_BUSY; return false; }
+    // the mic is checked first, so "mic in use" is reported (and can be solved) even without the phone
+    bool amber = !strcmp(side, "amber");
+    bool own = hw_mic_open_as(16000, 30.0f, amber ? "Amber" : "Translate", amber ? "listening to you" : "push-to-talk");
+    bool tap = false;
+    if (!own) {
+        // a meeting recording (16 kHz) keeps going: Amber gets a copy of the same audio, and the moment is bookmarked
+        if (amber && rec_active() && rec_mode() == REC_MEETING && !rec_paused() && hw_mic_tap_open(16000)) tap = true;
+        else { s_ptt_err = LINK_PTT_MIC_BUSY; return false; }
+    }
+    if (!link_ready() || ble_att_mtu(s_conn) < ADPCM_BLOCK_BYTES + 3) {
+        if (tap) hw_mic_tap_close(); else hw_mic_close();
+        s_ptt_err = LINK_PTT_NO_PHONE; return false;
+    }
+    if (tap) rec_mark();
+    s_ptt_tap = tap;
+    s_ptt_err = 0;
     snprintf(s_ptt_side, sizeof(s_ptt_side), "%s", side);
     snprintf(s_ptt_ctx, sizeof(s_ptt_ctx), "%s", ctx_json ? ctx_json : "");
     cJSON *o = cJSON_CreateObject();
@@ -398,6 +415,9 @@ bool link_ptt_start_ex(const char *side, const char *ctx_json)
     return true;
 }
 bool link_ptt_start(bool me) { return link_ptt_start_ex(me ? "me" : "them", NULL); }
+int link_ptt_error(void) { return s_ptt_err; }
+bool link_ptt_shared(void) { return s_ptt && s_ptt_tap; }
+const char *link_ptt_side(void) { return s_ptt_side; }
 void link_ptt_stop(void) { s_ptt = false; }
 
 int link_adpcm_selftest(char *hex, size_t n)

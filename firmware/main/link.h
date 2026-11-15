@@ -40,6 +40,11 @@ bool link_weather(char *out, size_t n); // "-2°C  Snow" ; false if none / older
 bool link_ptt_start(bool me);           // starts mic -> ADPCM -> AUDIO stream (false if not connected / mic busy)
 bool link_ptt_start_ex(const char *side, const char *ctx_json);   // side "me" / "them" / "amber"; ctx = JSON object or NULL
 void link_ptt_stop(void);
+#define LINK_PTT_MIC_BUSY 1    // someone else owns the mic (hw_mic_owner says who)
+#define LINK_PTT_NO_PHONE 2    // phone not connected (or link too slow for audio)
+int  link_ptt_error(void);     // why the last link_ptt_start_ex failed
+bool link_ptt_shared(void);    // true while Amber listens through a running meeting recording
+const char *link_ptt_side(void);
 
 // ---- Amber (personal agent): what the phone heard + replies ----
 #define LINK_AMBER_MAX 10

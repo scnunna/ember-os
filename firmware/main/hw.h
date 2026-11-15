@@ -42,6 +42,12 @@ void hw_storage_info(uint64_t *total, uint64_t *free_bytes);
 bool hw_mic_open(uint32_t rate, float gain_db);
 int  hw_mic_read_mono(int16_t *out, int frames);   // returns frames read (0 on error)
 void hw_mic_close(void);
+bool hw_mic_open_as(uint32_t rate, float gain_db, const char *who, const char *what);   // who/what show in "mic in use"
+bool hw_mic_owner(char *who, size_t wn, char *what, size_t tn, uint32_t *secs, uint32_t *rate);   // false = mic free
+// sharing: while someone owns the mic at `rate`, one listener can receive a copy of every frame they read
+bool hw_mic_tap_open(uint32_t rate);
+int  hw_mic_tap_read(int16_t *out, int frames, int timeout_ms);
+void hw_mic_tap_close(void);
 bool hw_spk_open(uint32_t rate, int vol);
 void hw_spk_write(const int16_t *mono, int frames);
 void hw_spk_close(void);

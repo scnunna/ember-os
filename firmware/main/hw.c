@@ -394,7 +394,12 @@ static esp_codec_dev_handle_t s_mic, s_spk;
 static bool s_mic_open, s_spk_open;
 static uint32_t s_mic_rate;
 
-bool hw_mic_open(uint32_t rate, float gain_db)
+// ---- mic: single owner, but a 16 kHz owner can share its stream with one listener (the "tap") ----
+static char s_mic_who[16], s_mic_what[40];
+static int64_t s_mic_since;
+#include "freertos/stream_buffer.h"
+static StreamBufferHandle_t s_tap;              // copy of every frame the owner reads (Amber while a meeting records)
+bool hw_mic_open_as(uint32_t rate, float gain_db, const char *who, const char *what)
 {
     if (s_mic_open) return false;          // mic is single-owner
     if (!s_mic) return false;              // set up once at boot (hw_audio_preinit); never lazily: see there
@@ -403,6 +408,19 @@ bool hw_mic_open(uint32_t rate, float gain_db)
     esp_codec_dev_set_in_gain(s_mic, gain_db);
     s_mic_open = true;
     s_mic_rate = rate;
+    snprintf(s_mic_who, sizeof(s_mic_who), "%s", who ? who : "an app");
+    snprintf(s_mic_what, sizeof(s_mic_what), "%s", what ? what : "");
+    s_mic_since = esp_timer_get_time();
+    return true;
+}
+bool hw_mic_open(uint32_t rate, float gain_db) { return hw_mic_open_as(rate, gain_db, "an app", ""); }
+bool hw_mic_owner(char *who, size_t wn, char *what, size_t tn, uint32_t *secs, uint32_t *rate)
+{
+    if (!s_mic_open) return false;
+    if (who) snprintf(who, wn, "%s", s_mic_who);
+    if (what) snprintf(what, tn, "%s", s_mic_what);
+    if (secs) *secs = (uint32_t)((esp_timer_get_time() - s_mic_since) / 1000000);
+    if (rate) *rate = s_mic_rate;
     return true;
 }
 int hw_mic_read_mono(int16_t *out, int frames)
@@ -412,13 +430,34 @@ int hw_mic_read_mono(int16_t *out, int frames)
     if (frames > 1024) frames = 1024;
     if (esp_codec_dev_read(s_mic, tmp, frames * 4) != ESP_CODEC_DEV_OK) return 0;
     for (int i = 0; i < frames; i++) out[i] = (int16_t)(((int)tmp[2 * i] + (int)tmp[2 * i + 1]) / 2);
+    StreamBufferHandle_t t = s_tap;
+    if (t) xStreamBufferSend(t, out, frames * 2, 0);   // never blocks the owner; a full tap just drops
     return frames;
+}
+bool hw_mic_tap_open(uint32_t rate)
+{
+    if (!s_mic_open || s_mic_rate != rate || s_tap) return false;
+    s_tap = xStreamBufferCreateWithCaps(32 * 1024, 2, MALLOC_CAP_SPIRAM);    // ~1 s of 16 kHz audio
+    return s_tap != NULL;
+}
+int hw_mic_tap_read(int16_t *out, int frames, int timeout_ms)
+{
+    StreamBufferHandle_t t = s_tap;
+    if (!t) return 0;
+    return (int)(xStreamBufferReceive(t, out, frames * 2, pdMS_TO_TICKS(timeout_ms)) / 2);
+}
+void hw_mic_tap_close(void)
+{
+    StreamBufferHandle_t t = s_tap;
+    s_tap = NULL;
+    if (t) { vTaskDelay(pdMS_TO_TICKS(20)); vStreamBufferDeleteWithCaps(t); }   // let an in-flight send finish
 }
 void hw_mic_close(void)
 {
     if (!s_mic_open) return;
     esp_codec_dev_close(s_mic);
     s_mic_open = false;
+    s_mic_who[0] = s_mic_what[0] = 0;
 }
 bool hw_spk_open(uint32_t rate, int vol)
 {
