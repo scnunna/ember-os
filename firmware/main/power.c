@@ -22,6 +22,7 @@
 #include "driver/rtc_io.h"
 #include "bsp/esp-bsp.h"
 #include "app.h"
+#include "diag.h"
 #include "sched.h"
 #include "hw.h"
 #include "ble.h"
@@ -132,6 +133,8 @@ void power_update(bool screen_on)
 void power_deep_sleep(uint32_t timer_s)
 {
     ESP_LOGW(TAG, "entering deep sleep (timer %lus)", (unsigned long)timer_s);
+    diag_event("DEEP SLEEP timer=%lus (still %lus)", (unsigned long)timer_s, (unsigned long)(hw_imu_still_ms() / 1000));
+    diag_flush();
     hw_steps_save();
     bool wom = hw_imu_wom_arm();
     panel_cmd(0x28);

@@ -40,3 +40,33 @@ int adpcm_encode_block(const int16_t *s, uint8_t seq, int *index, uint8_t *out)
     *index = idx;
     return ADPCM_BLOCK_BYTES;
 }
+
+// Standard IMA-ADPCM WAV block (WAVE format 0x0011, mono), as written by Windows/sox/ffmpeg and read by every player:
+// 4-byte header (first sample int16 LE, step index, 0) + the other nsamp-1 samples as 4-bit codes, low nibble first.
+// nsamp must be odd (505 for a 256-byte block). *index carries over between blocks.
+int ima_wav_encode_block(const int16_t *s, int nsamp, int *index, uint8_t *out)
+{
+    int pred = s[0], idx = *index;
+    out[0] = (uint8_t)(pred & 0xFF);
+    out[1] = (uint8_t)((pred >> 8) & 0xFF);
+    out[2] = (uint8_t)idx;
+    out[3] = 0;
+    uint8_t *d = out + 4;
+    for (int i = 1; i < nsamp; i++) {
+        int step = STEP[idx], diff = s[i] - pred, nib = 0;
+        if (diff < 0) { nib = 8; diff = -diff; }
+        if (diff >= step) { nib |= 4; diff -= step; }
+        if (diff >= (step >> 1)) { nib |= 2; diff -= step >> 1; }
+        if (diff >= (step >> 2)) nib |= 1;
+        int dq = step >> 3;
+        if (nib & 1) dq += step >> 2;
+        if (nib & 2) dq += step >> 1;
+        if (nib & 4) dq += step;
+        pred = clampi((nib & 8) ? pred - dq : pred + dq, -32768, 32767);
+        idx = clampi(idx + IDX[nib], 0, 88);
+        int j = i - 1;
+        if (j & 1) d[j >> 1] |= (uint8_t)(nib << 4); else d[j >> 1] = (uint8_t)nib;
+    }
+    *index = idx;
+    return 4 + (nsamp - 1) / 2;
+}

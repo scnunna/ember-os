@@ -1,4 +1,6 @@
-// Background recorder service: mono 16-bit WAV to SD (or internal flash if no card).
+// Background recorder service to SD (or internal flash if no card):
+//  * meeting recordings (16 kHz voice): IMA-ADPCM WAV (format 0x11, 4 bits/sample) = 4x smaller, ~8 KB/s
+//  * music recordings (44.1 kHz): plain 16-bit PCM WAV (full quality for the guitar)
 #include "esp_attr.h"
 #include <stdio.h>
 #include <string.h>
@@ -12,7 +14,9 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "app.h"
+#include "diag.h"
 #include "hw.h"
+#include "adpcm.h"
 
 static const char *TAG = "rec";
 static volatile bool s_active, s_stop, s_done = true;
@@ -86,29 +90,76 @@ static void wav_header(FILE *f, uint32_t rate, uint32_t data_bytes)
     fseek(f, 0, SEEK_END);
 }
 
+// IMA-ADPCM WAV header (60 bytes): fmt (20 bytes, cbSize 2 + samplesPerBlock) + fact (sample count) + data
+static void ima_header(FILE *f, uint32_t rate, uint32_t samples, uint32_t data_bytes)
+{
+    uint8_t h[60];
+    uint32_t v; uint16_t s;
+    memcpy(h, "RIFF", 4); v = 52 + data_bytes; memcpy(h + 4, &v, 4);
+    memcpy(h + 8, "WAVEfmt ", 8); v = 20; memcpy(h + 16, &v, 4);
+    s = 0x11; memcpy(h + 20, &s, 2);                                   // IMA ADPCM
+    s = 1; memcpy(h + 22, &s, 2);                                      // mono
+    memcpy(h + 24, &rate, 4);
+    v = rate * IMA_WAV_BLOCK_BYTES / IMA_WAV_BLOCK_SAMPLES; memcpy(h + 28, &v, 4);
+    s = IMA_WAV_BLOCK_BYTES; memcpy(h + 32, &s, 2);                    // block align
+    s = 4; memcpy(h + 34, &s, 2);                                      // bits per sample
+    s = 2; memcpy(h + 36, &s, 2);                                      // cbSize
+    s = IMA_WAV_BLOCK_SAMPLES; memcpy(h + 38, &s, 2);                  // samples per block
+    memcpy(h + 40, "fact", 4); v = 4; memcpy(h + 44, &v, 4); memcpy(h + 48, &samples, 4);
+    memcpy(h + 52, "data", 4); memcpy(h + 56, &data_bytes, 4);
+    fseek(f, 0, SEEK_SET);
+    fwrite(h, 1, 60, f);
+    fseek(f, 0, SEEK_END);
+}
+
 // Writer: drains the stream buffer to the file in 16 KB blocks (SD / flash writes can stall 100+ ms).
 static void writer_task(void *arg)
 {
     uint8_t *blk = heap_caps_malloc(WBLK, MALLOC_CAP_SPIRAM);
     FILE *f = fopen(s_file, "wb");
     bool err = (!blk || !f);
-    uint32_t total = 0, last_patch = 0;
-    if (!err) wav_header(f, s_rate, 0);
+    bool ima = (s_mode == REC_MEETING);
+    uint32_t total = 0, last_patch = 0, samples = 0;
+    // IMA: collect 505 samples (as bytes: the stream buffer can split a sample) -> one 256-byte block
+    EXT_RAM_BSS_ATTR static uint8_t pend[IMA_WAV_BLOCK_SAMPLES * 2];
+    uint8_t out[IMA_WAV_BLOCK_BYTES];
+    int pn = 0, idx = 0;
+    if (!err) { if (ima) ima_header(f, s_rate, 0, 0); else wav_header(f, s_rate, 0); }
     else ESP_LOGE(TAG, "open failed: %s", s_file);
     while (1) {
         size_t n = xStreamBufferReceive(s_sb, blk, WBLK, pdMS_TO_TICKS(100));
-        if (n == 0 && s_cap_done) break;
-        if (n && !err) {
+        bool last = (n == 0 && s_cap_done);
+        if (n && !err && !ima) {
             if (fwrite(blk, 1, n, f) != n) { err = true; s_stop = true; ESP_LOGE(TAG, "write error (disk full?)"); }
             total += n;
-            if (total - last_patch > (uint32_t)s_rate * 2 * 20) {       // patch header every ~20 s: crash-safe
-                last_patch = total;
-                wav_header(f, s_rate, total);
-                fflush(f);
+        }
+        if (!err && ima) {
+            size_t i = 0;
+            while (i < n || (last && pn > 0)) {
+                if (i < n) { size_t take = sizeof(pend) - pn; if (take > n - i) take = n - i; memcpy(pend + pn, blk + i, take); pn += take; i += take; }
+                if (pn < (int)sizeof(pend) && !last) break;
+                if (pn < (int)sizeof(pend)) {                    // final partial block: pad by repeating the last sample
+                    int have = pn / 2;
+                    int16_t lastv = have ? ((int16_t *)pend)[have - 1] : 0;
+                    for (int k = have; k < IMA_WAV_BLOCK_SAMPLES; k++) ((int16_t *)pend)[k] = lastv;
+                    samples += have;
+                } else samples += IMA_WAV_BLOCK_SAMPLES;
+                ima_wav_encode_block((const int16_t *)pend, IMA_WAV_BLOCK_SAMPLES, &idx, out);
+                pn = 0;
+                if (fwrite(out, 1, sizeof(out), f) != sizeof(out)) { err = true; s_stop = true; ESP_LOGE(TAG, "write error (disk full?)"); break; }
+                total += sizeof(out);
+                if (last) break;
             }
         }
+        if (!err && total - last_patch > (ima ? (uint32_t)s_rate / 2 : (uint32_t)s_rate * 2) * 20) {   // ~20 s: crash-safe header
+            last_patch = total;
+            if (ima) ima_header(f, s_rate, samples, total); else wav_header(f, s_rate, total);
+            fflush(f);
+        }
+        if (last) break;
     }
-    if (f) { wav_header(f, s_rate, total); fclose(f); }
+    if (f) { if (ima) ima_header(f, s_rate, samples, total); else wav_header(f, s_rate, total); fclose(f); }
+    diag_event("REC saved %s bytes=%lu dropped=%lu err=%d", s_file, (unsigned long)total, (unsigned long)s_dropped, err);
     save_marks();
     free(blk);
     int64_t ms = (esp_timer_get_time() - s_cap_t0) / 1000;

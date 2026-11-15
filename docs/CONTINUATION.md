@@ -1,5 +1,13 @@
 # Continuation notes (start here in a new session)
 
+## 2026-11-15 16:45: OWNER IS OUT WITH THE WATCH (first time unplugged / on battery)
+When he is back: plug in, then `python tools/...` dump `diaglog 256` (shell) and /flash/power.csv; check BLE drops
+(reason codes), deep sleeps, battery %/h, steps, check-in answers (20:00, 00:00), Amber use, any CRASH/BROWNOUT boot.
+Firmware on the watch: diag log + compressed meeting recordings + power button + hold=Amber (this commit).
+Open bugs: (1) second Wi-Fi hotspot start in a row fails "low memory" (security_test 16/18): internal DMA RAM not
+fully returned after the first hotspot; (2) shell "diagnote" is shadowed by the "diag" prefix (reorder in cmd.c).
+No firmware update over Bluetooth exists (USB only).
+
 Last updated 2026-11-15 10:40 local.
 
 ## State

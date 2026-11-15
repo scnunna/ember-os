@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "cJSON.h"
 #include "app.h"
+#include "diag.h"
 #include "hw.h"
 #include "link.h"
 #include "sched.h"
@@ -180,6 +181,7 @@ bool sched_set(const cJSON *m, char *err, size_t errn)
     save();
     unlock();
     ESP_LOGI(TAG, "plan %lu gen=%s blocks=%d slots=%d", (unsigned long)p.date, p.gen, p.n, p.nslots);
+    diag_event("PLAN %lu blocks=%d", (unsigned long)p.date, p.n);
 #undef p
     xSemaphoreGive(busy);
     if (s_task) xTaskNotifyGive(s_task);
@@ -262,6 +264,7 @@ static uint32_t record(plan_t *p, int k, char ans)
     for (int j = 0; j < n; j++) snprintf(c->ids[j], sizeof(c->ids[j]), "%s", p->b[idx[j]].id);
     c->nids = n;
     printf("SCHED ci seq=%lu date=%lu slot=%d ans=%s ids=%d\n", (unsigned long)seq, (unsigned long)c->date, c->slot, ans_name(ans), n);
+    diag_event("CHECKIN slot=%d ans=%s queued=%d", c->slot, ans_name(ans), s_q.n);
     if (p == &s_prev) save_prev(); else save();
     save_q();
     unlock();

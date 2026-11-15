@@ -17,6 +17,7 @@
 #include "cJSON.h"
 #include "bsp/esp-bsp.h"
 #include "app.h"
+#include "diag.h"
 #include "hw.h"
 #include "ble.h"
 #include "wifi.h"
@@ -381,6 +382,7 @@ static void ptt_task(void *a)
     cJSON_AddStringToObject(o, "t", "ptt"); cJSON_AddStringToObject(o, "side", s_ptt_side); cJSON_AddBoolToObject(o, "on", false);
     cJSON_AddNumberToObject(o, "blocks", seq_total);          // how many AUDIO blocks were sent (phone: wait until seen)
     send_obj(o);
+    diag_event("PTT end blocks=%d", seq_total);
     s_ptt_task = false;
     vTaskDelete(NULL);
 }
@@ -401,6 +403,7 @@ bool link_ptt_start_ex(const char *side, const char *ctx_json)
         s_ptt_err = LINK_PTT_NO_PHONE; return false;
     }
     if (tap) rec_mark();
+    diag_event("PTT start side=%s shared=%d", side, tap);
     s_ptt_tap = tap;
     s_ptt_err = 0;
     snprintf(s_ptt_side, sizeof(s_ptt_side), "%s", side);
@@ -642,7 +645,7 @@ static void link_task(void *a)
             // phone app is actually listening. Wait a moment so the hello isn't lost (the phone can also send hello_req).
             vTaskDelay(pdMS_TO_TICKS(1200));
             s_hello_due = false;
-            if (link_ready()) { send_hello(); link_send_steps(); last_steps = esp_timer_get_time(); flush_ci(); }
+            if (link_ready()) { send_hello(); link_send_steps(); last_steps = esp_timer_get_time(); flush_ci(); diag_event("LINK phone app ready"); }
         }
         if (link_ready() && sched_queued() && esp_timer_get_time() - s_last_ci_flush > 60LL * 1000000) flush_ci();
         if (link_ready() && esp_timer_get_time() - last_steps > 3600LL * 1000000) { last_steps = esp_timer_get_time(); link_send_steps(); }

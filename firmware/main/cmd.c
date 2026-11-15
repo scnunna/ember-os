@@ -1,4 +1,4 @@
-// USB serial command shell for development / end-to-end tests (no effect unless the PC sends a command).
+﻿// USB serial command shell for development / end-to-end tests (no effect unless the PC sends a command).
 //   settime Y M D h m s   set the RTC (the flash scripts do this automatically)
 //   layout                open every screen and report overlapping / off-screen widgets
 //   nav N                 random navigation stress test (N steps)
@@ -16,6 +16,8 @@
 #include "bsp/esp-bsp.h"
 #include "app.h"
 #include "sched.h"
+#include "adpcm.h"
+#include "diag.h"
 #include "hw.h"
 #include "link.h"
 #include "ble.h"
@@ -436,9 +438,22 @@ static void run_line(char *l)
         while (ok && esp_timer_get_time() - t0 < 1000000) got += hw_mic_tap_read(buf, 512, 100);
         if (ok) hw_mic_tap_close();
         printf("CMD taptest open=%d frames=%d\n", ok, got);
-    } else if (!strncmp(l, "recpause", 8)) { bool on = l[8] != '0'; printf("CMD recpause %d ok=%d\n", on, rec_pause(on)); }
+    } else if (sscanf(l, "recpause %d", &n) == 1) { bool on = n != 0; printf("CMD recpause %d ok=%d\n", on, rec_pause(on)); }
     else if (!strncmp(l, "du", 2) && (l[2] == 0 || l[2] == ' ')) cmd_du(l[2] == ' ' ? l + 3 : "/flash", 0);
-    else if (!strncmp(l, "pmu", 3)) { uint8_t r[4]; hw_pmu_regs(r); printf("CMD pmu r22=%02x r27=%02x r41=%02x r49=%02x\n", r[0], r[1], r[2], r[3]); }
+    else if (!strncmp(l, "radio off", 9)) { ble_test_radio_off(true); vTaskDelay(pdMS_TO_TICKS(800)); printf("CMD radio off link_ready=%d\n", link_ready()); }
+    else if (!strncmp(l, "radio on", 8)) { ble_test_radio_off(false); printf("CMD radio on\n"); }
+    else if (sscanf(l, "diaglog %d", &n) == 1) diag_dump(n);           // last n KB of /flash/diag.log
+    else if (!strncmp(l, "diagclear", 9)) { diag_clear(); printf("CMD diagclear\n"); }
+    else if (!strncmp(l, "diagnote ", 9)) { diag_event("NOTE %s", l + 9); diag_flush(); printf("CMD diagnote\n"); }
+    else if (!strncmp(l, "imatest", 7)) {                       // compressed-recording encoder vs tools/ima_wav_check.py
+        static int16_t sig[IMA_WAV_BLOCK_SAMPLES * 2]; uint8_t out[IMA_WAV_BLOCK_BYTES]; int idx = 0; uint32_t sum = 0;
+        for (int t = 0; t < IMA_WAV_BLOCK_SAMPLES * 2; t++) sig[t] = (int16_t)(((t * 37) % 2001 - 1000) * 13);
+        for (int k = 0; k < 2; k++) {
+            ima_wav_encode_block(sig + k * IMA_WAV_BLOCK_SAMPLES, IMA_WAV_BLOCK_SAMPLES, &idx, out);
+            for (int i = 0; i < IMA_WAV_BLOCK_BYTES; i++) sum = sum * 31 + out[i];
+        }
+        printf("CMD imatest sum=%08lx idx=%d\n", (unsigned long)sum, idx);
+    } else if (!strncmp(l, "pmu", 3)) { uint8_t r[4]; hw_pmu_regs(r); printf("CMD pmu r22=%02x r27=%02x r41=%02x r49=%02x\n", r[0], r[1], r[2], r[3]); }
     else if (!strncmp(l, "schedreset", 10)) { sched_reset(); sched_test_minute(-1); printf("CMD schedreset\n"); }
     else if (!strncmp(l, "sched", 5)) sched_print();
     else if (sscanf(l, "citest %d", &n) == 1) { sched_test_minute(n); vTaskDelay(pdMS_TO_TICKS(300)); printf("CMD citest %d\n", n); }

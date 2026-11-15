@@ -2,6 +2,7 @@
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
 #include "app.h"
+#include "diag.h"
 #include "hw.h"
 #include "ble.h"
 #include "esp_system.h"
@@ -88,6 +89,7 @@ void app_main(void)
     hw_init();
     MEM("hw");
     power_init();
+    diag_start();                                  // diagnostics log (after storage + RTC)
     MEM("power");
     bsp_display_cfg_t dcfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),

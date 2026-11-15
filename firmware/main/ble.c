@@ -16,6 +16,7 @@
 #include "services/gatt/ble_svc_gatt.h"
 #include "bsp/esp-bsp.h"
 #include "app.h"
+#include "diag.h"
 #include "hw.h"
 #include "ble.h"
 #include "link.h"
@@ -35,6 +36,7 @@ static const ble_uuid128_t UUID_RX = BLE_UUID128_INIT(UUID_BYTES(0x02));
 static const ble_uuid128_t UUID_TX = BLE_UUID128_INIT(UUID_BYTES(0x03));
 
 static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE, s_tx_handle;
+static volatile bool s_radio_off;              // tests: no phone may connect (see ble_test_radio_off)
 static bool s_inited, s_enabled, s_adv_wanted;
 static uint8_t s_own_addr;
 static char s_name[20] = "Watch";
@@ -47,6 +49,14 @@ typedef struct { uint8_t len; uint8_t d[24]; } txmsg_t;
 const char *ble_name(void) { return s_name; }
 bool ble_enabled(void) { return s_enabled; }
 bool ble_connected(void) { return s_conn != BLE_HS_CONN_HANDLE_NONE; }
+static void advertise(void);
+// Device tests: drop the phone and stop advertising, so nothing a test does can reach the real phone / Life OS.
+void ble_test_radio_off(bool off)
+{
+    s_radio_off = off;
+    if (off) { ble_gap_adv_stop(); if (s_conn != BLE_HS_CONN_HANDLE_NONE) ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM); }
+    else advertise();
+}
 int ble_phone_batt(void) { return s_phone_batt; }
 int ble_notif_count(void) { return s_notif_total; }
 static int s_seen;
@@ -265,6 +275,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg);
 
 static void advertise(void)
 {
+    if (s_radio_off) return;
     if (!s_enabled || !s_adv_wanted) return;
     struct ble_hs_adv_fields f = {0};
     f.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
@@ -288,7 +299,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
     switch (ev->type) {
     case BLE_GAP_EVENT_CONNECT:
         if (ev->connect.status == 0) {
-            s_conn = ev->connect.conn_handle; link_on_connect(s_conn); ESP_LOGI(TAG, "connected");
+            s_conn = ev->connect.conn_handle; link_on_connect(s_conn); ESP_LOGI(TAG, "connected"); diag_event("BLE connected");
             esp_timer_stop(s_unsec_tmr);
             esp_timer_start_once(s_unsec_tmr, 30LL * 1000000);
             // ask a bonded phone to switch on encryption right away (Security Request), so the link is ready
@@ -303,6 +314,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         ui_passkey(-1);
         link_on_disconnect();
         ESP_LOGI(TAG, "disconnected");
+        diag_event("BLE disconnected reason=0x%x", ev->disconnect.reason);
         advertise();
         break;
     case BLE_GAP_EVENT_SUBSCRIBE:
@@ -334,6 +346,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
     case BLE_GAP_EVENT_ENC_CHANGE: {
         bool sec = ev->enc_change.status == 0 && conn_secure(ev->enc_change.conn_handle);
         ESP_LOGI(TAG, "encryption change status=%d secure=%d", ev->enc_change.status, sec);
+        diag_event("BLE secure=%d status=%d", sec, ev->enc_change.status);
         ui_passkey(-1);
         if (sec) {
             esp_timer_stop(s_unsec_tmr);

@@ -87,10 +87,12 @@ def gci(slot, pred=lambda d: True):
 
 for _ in range(10):
     if ask('pwr', 'CMD pwr', 2): break
-r = ask('secstate', 'CMD secstate') or ''
-if 'link_ready=1' in r:
-    print('ABORT: a phone is connected. Stop Ember Companion first (adb shell am force-stop com.nunna.embercompanion),')
-    print('otherwise the test check-ins go to your real Life OS.'); sys.exit(2)
+# no phone may take part: the radio is off for the whole test (and back on at exit, even after a failure)
+import atexit
+r = ask('radio off', 'CMD radio', 5) or ''
+if 'link_ready=0' not in r:
+    print('ABORT: could not take the phone off the link:', r); sys.exit(2)
+atexit.register(lambda: (s.write(b'radio on' + bytes([10])), time.sleep(0.3)))
 ask('face', 'CMD face', 5)
 ask('schedreset', 'CMD schedreset')
 check('date=0' in sched(), 'starts with no plan')

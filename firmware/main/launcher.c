@@ -7,6 +7,7 @@
 #include "esp_timer.h"
 #include "display/lv_display_private.h"   // scr_to_load: cancel an unfinished screen slide (see cancel_pending_open)
 #include "app.h"
+#include "diag.h"
 #include "hw.h"
 
 static lv_obj_t *s_face, *s_grid, *s_app;
@@ -363,6 +364,7 @@ void launcher_btn_long(void)
 void amber_hold(bool down);
 void launcher_btn_hold(bool down)              // hold = talk to Amber while held
 {
+    diag_event("BTN hold %s", down ? "down" : "up");
     bsp_display_lock(0);
     launcher_wake();
     amber_hold(down);
@@ -380,6 +382,7 @@ void launcher_show_app(int idx)
 
 void launcher_btn_double(void)                 // double press = start/stop a meeting recording
 {
+    diag_event("BTN double (recording %s)", rec_active() ? "stop" : "start");
     bsp_display_lock(0);
     launcher_wake();
     bool was = rec_active();

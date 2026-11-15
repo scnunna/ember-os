@@ -10,7 +10,8 @@ if ($args[0] -eq 'flash') {
     $port = Find-WatchPort
     if (-not $port) { "Watch not found on USB (Espressif VID 303A). Plug it in and try again."; exit 1 }
     "Watch on $port"
-    idf.py -DSNAP=0 -DSELFTEST=0 build 2>&1 | Select-String -Pattern 'error:|undefined reference' | Select -First 10
+    $out = idf.py -DSNAP=0 -DSELFTEST=0 build 2>&1
+    if ($LASTEXITCODE -ne 0) { $out | Select-String -Pattern 'error:|undefined reference|FAILED' | Select -First 10; "BUILD FAILED - nothing was flashed"; exit 1 }
     idf.py -p $port flash 2>&1 | Select-String 'error|Error|Hard resetting'
     Start-Sleep 5
     python tools\settime.py $port

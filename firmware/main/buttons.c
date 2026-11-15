@@ -10,6 +10,7 @@
 #include "esp_sleep.h"
 #include "esp_timer.h"
 #include "app.h"
+#include "diag.h"
 
 static TaskHandle_t s_task;
 

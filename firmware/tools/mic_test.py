@@ -42,8 +42,12 @@ def labels():
 
 for _ in range(10):
     if ask('pwr', 'CMD pwr', 2): break
-if 'link_ready=1' in ask('secstate', 'CMD secstate'):
-    print('ABORT: a phone is connected; stop Ember Companion first (this test must not send audio).'); sys.exit(2)
+# no phone may take part: the radio is off for the whole test (and back on at exit, even after a failure)
+import atexit
+r = ask('radio off', 'CMD radio', 5) or ''
+if 'link_ready=0' not in r:
+    print('ABORT: could not take the phone off the link:', r); sys.exit(2)
+atexit.register(lambda: (s.write(b'radio on' + bytes([10])), time.sleep(0.3)))
 ask('recstop', 'CMD recstop')
 ask('face', 'CMD face', 5)
 check(mic().get('busy') == '0', 'mic starts free')

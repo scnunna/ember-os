@@ -10,6 +10,7 @@ void ble_start(void);                 // init stack + advertise (if enabled in p
 void ble_set_enabled(bool on);
 bool ble_enabled(void);
 bool ble_connected(void);
+void ble_test_radio_off(bool off);   // USB test shell: "radio off" / "radio on"
 int  ble_notif_count(void);
 int  ble_notif_unread(void);
 void ble_notif_mark_seen(void);           // total received since boot
