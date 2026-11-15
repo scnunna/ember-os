@@ -78,7 +78,8 @@ void buttons_start(void);
 void launcher_btn_short(void);
 void launcher_btn_long(void);
 void launcher_btn_double(void);
-void launcher_btn_triple(void);
+void launcher_btn_hold(bool down);
+void launcher_show_app(int idx);   // open an app from anywhere
 
 // ---- watch face widgets (face.c) ----
 void face_create(lv_obj_t *scr);

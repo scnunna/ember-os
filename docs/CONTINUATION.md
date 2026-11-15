@@ -8,20 +8,22 @@ Last updated 2026-11-15 10:40 local.
   shell intent link). Chain watch <-> Companion <-> Gateway <-> Life OS works. Speech model approved in Gateway.
 - Life OS side: separate private repo (Amber server, migrations 0022/0023), deployed.
 
-## In progress: double press = talk to Amber, mic ownership (NOT finished)
-Goal (owner 2026-11-15):
-- double press -> open Amber and listen; double press again (or tap Send) sends
-- triple press -> meeting recording (moved from double)
-- mic owner tracking (`hw_mic_open_as`, `hw_mic_owner`): who + what + how long; face shows "<who> listening"
-- meeting recording (16 kHz): Amber SHARES the mic (`hw_mic_tap_*`), recording continues, moment bookmarked
-- music recording: "Mic in use" sheet with Pause-talk-resume / Save & stop / Keep running (`rec_pause`)
-- Tuner/Sound/Translate: opening Amber closes them, toast says which
-Code: hw.c (mic owner + tap), rec.c (pause/resume), link.c (PTT share + error reasons), app_amber.c (sheet, toggle,
-amber_double_press), buttons.c (press counting), launcher.c (btn_double/triple), face.c, cmd.c (micstate, btn N,
-recstart/recstop, taptest, recpause).
-Test: tools/mic_test.py (run with Ember Companion force-stopped). LAST RUN 6/21 PASS. Failures to debug:
-- `btn 2` returns app=2 (Tuner) instead of Amber 12, and "Phone not connected" never shows: check launcher_open from the
-  cmd task while holding the display lock, and whether start_talk (vTaskDelay inside the lock) blocks the screen load.
-- triple press (`btn 3`) does not start a recording; `recstart 1` fails too -> rec_start returns false. Suspect rec state
-  (s_done false?) or mic left open by the Amber attempt; check micstate right after the Amber attempt.
-- taptest open=0 only because no recording was running.
+## Buttons (owner 2026-11-15, DONE + tested, tools/mic_test.py 7/7 + recording part skipped while storage is full)
+- BOOT hold (450 ms) = talk to Amber while held, release sends (opens Amber from anywhere; closes Tuner/Sound/Translate with a toast)
+- BOOT double = start/stop meeting recording (honest errors: "Storage full (x MB free)..." / "Mic in use: <who> (<what>)")
+- BOOT short = back / screen off. No triple press.
+- mic owner tracking + face "<who> listening"; meeting recording shares the mic with Amber; music recording -> sheet
+  (Pause-talk-resume / Save & stop / Keep running)
+- Amber replies are 1-4 short bullet lines (Life OS server cutReply + prompt); the watch keeps '
+'.
+
+## Proposed next (owner asked "what do you think"): PWR button
+- PWR click = screen on/off, PWR hold = device off/on (AXP2101 hardware; options 4/6/8/10 s, suggest 6 s),
+  PWR double = Tuner (if the owner confirms he wants a Tuner shortcut). Firmware does not read PWR yet:
+  poll AXP2101 IRQ status (PKEY short/long bits) while awake; verify on the device first.
+
+## PROBLEM: /flash file system leaked ~6.8 MB (fs_free=0, files 13.8 MB of 20.6 MB, one garbled dir entry)
+- Cause: likely writes cut by the many reboots/flashes on 11-15 (a meeting recording M_20261115_091121.wav 13.5 MB was being written).
+- Fix plan (needs owner OK): owner downloads the recording via Companion > Meeting notes (also deletes it on the watch);
+  back up /flash/apps + notes over USB; reformat the FAT partition; restore. Add a boot-time leak check.
+- `du` shell command lists usage.

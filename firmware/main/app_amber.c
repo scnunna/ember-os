@@ -1,5 +1,5 @@
-// Amber: talk to your personal agent. Hold the button and speak, or double-press the watch button to start and
-// double-press (or tap Send) to finish. The phone turns it into text and sends it to Amber (Life OS on your tailnet).
+// Amber: talk to your personal agent. Hold the watch button (or the on-screen button) and speak; release to send.
+// A short tap on the on-screen button starts listening hands-free; tap again to send. The phone turns it into text and sends it to Amber (Life OS on your tailnet).
 // "You said" and Amber's replies are listed below, newest first.
 //
 // The mic has one owner. When Amber can't get it:
@@ -17,7 +17,7 @@
 static lv_obj_t *s_scr, *s_status, *s_list, *s_talk, *s_sheet;
 static lv_timer_t *s_tmr;
 static int s_gen = -1;
-static bool s_toggle;          // started by tap / double-press (not hold): the next tap or double-press sends
+static bool s_toggle;          // started by a short tap on the screen button (not a hold): the next tap sends
 static bool s_resume_rec;      // we paused a recording for Amber: resume it when Amber stops listening
 static bool s_was_listening;
 
@@ -26,7 +26,7 @@ static void set_status(const char *t) { if (s_status) lv_label_set_text(s_status
 static void listening_ui(void)
 {
     if (link_ptt_shared()) set_status(LV_SYMBOL_AUDIO "  listening (recording continues)");
-    else set_status(s_toggle ? LV_SYMBOL_AUDIO "  listening... double-press or tap to send" : LV_SYMBOL_AUDIO "  listening... release to send");
+    else set_status(s_toggle ? LV_SYMBOL_AUDIO "  listening... tap to send" : LV_SYMBOL_AUDIO "  listening... release to send");
     if (s_talk) lv_label_set_text(lv_obj_get_child(s_talk, 0), s_toggle ? LV_SYMBOL_OK "  Send" : LV_SYMBOL_AUDIO "  Hold to talk");
 }
 
@@ -174,7 +174,7 @@ void app_amber_start(lv_obj_t *scr)
     lv_obj_add_event_cb(s_talk, talk_ev, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_talk, talk_ev, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(s_talk, talk_ev, LV_EVENT_PRESS_LOST, NULL);
-    s_status = ui_label(scr, &lv_font_montserrat_14, C_DIM, link_ready() ? "Hold to talk, or double-press the button" : "Phone not connected");
+    s_status = ui_label(scr, &lv_font_montserrat_14, C_DIM, link_ready() ? "Hold to talk (here or the watch button)" : "Phone not connected");
     lv_obj_align(s_status, LV_ALIGN_TOP_MID, 0, 166);
     s_list = lv_obj_create(scr);
     lv_obj_set_size(s_list, 360, 290);
@@ -199,16 +199,21 @@ void app_amber_stop(void)
     s_scr = s_status = s_list = s_talk = s_sheet = NULL;
 }
 
-// Double-press of the watch button (display lock held): open Amber and start listening, or send if already listening.
-void amber_double_press(void)
+// Holding the watch button (display lock held): open Amber and listen while held; releasing sends.
+static bool s_hold_started;
+void amber_hold(bool down)
 {
     int idx = -1;
     for (int i = 0; i < APP_COUNT; i++) if (!strcmp(APPS[i].name, "Amber")) idx = i;
     if (idx < 0) return;
-    if (launcher_state() == 2 && launcher_cur() == idx && link_ptt_active() && !strcmp(link_ptt_side(), "amber")) { stop_talk(); return; }
+    if (!down) {                                                   // released
+        if (s_hold_started && link_ptt_active() && !strcmp(link_ptt_side(), "amber")) stop_talk();
+        s_hold_started = false;
+        return;
+    }
     char who[16] = "";
     bool app_mic = hw_mic_owner(who, sizeof(who), NULL, 0, NULL, NULL) && !rec_active() && !link_ptt_active();
-    if (!(launcher_state() == 2 && launcher_cur() == idx)) launcher_open(idx);   // closes Tuner/Sound: frees their mic
+    launcher_show_app(idx);                                        // stops Tuner/Sound/Translate: frees their mic
     if (app_mic && strcmp(who, "Amber")) { char m[48]; snprintf(m, sizeof(m), "Closed %s so Amber can listen", who); ui_msg(m); }
-    start_talk(true);
+    s_hold_started = start_talk(false);
 }

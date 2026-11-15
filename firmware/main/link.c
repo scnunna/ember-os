@@ -592,7 +592,11 @@ static void handle(const char *json, bool trusted)
         if (cJSON_IsNumber(u) && u->valuedouble >= 0) { sched_ack((uint32_t)u->valuedouble); if (sched_queued()) flush_ci(); }
     } else if (!strcmp(t, "ci_cfg")) sched_cfg(m);
     else if (!strcmp(t, "amber_heard") || !strcmp(t, "amber")) {
-        char tx[304]; copy_str(tx, sizeof(tx), m, "text");
+        // Amber answers in short bullet lines: keep '\n' (copy_str turns every control character into a space)
+        char tx[304];
+        const cJSON *tv2 = cJSON_GetObjectItemCaseSensitive(m, "text");
+        snprintf(tx, sizeof(tx), "%s", cJSON_IsString(tv2) ? tv2->valuestring : "");
+        for (char *p = tx; *p; p++) if ((unsigned char)*p < 32 && *p != '\n') *p = ' ';
         if (tx[0]) {
             bool heard = !strcmp(t, "amber_heard");
             amber_push(tx, heard);

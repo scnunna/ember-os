@@ -1,5 +1,5 @@
-// BOOT button (GPIO0): short = back / screen off, double = talk to Amber, triple = start/stop a meeting recording,
-// long = screen on/off.
+// BOOT button (GPIO0): short = back / screen off, double = start/stop a meeting recording, HOLD = talk to Amber while
+// held (release sends).
 // Interrupt-driven: the task sleeps forever until the button goes down, polls at 10 ms only while a press or a
 // double-click window is in progress, then sleeps again. The same pin wakes the chip from light sleep.
 #include "freertos/FreeRTOS.h"
@@ -21,8 +21,7 @@ static void IRAM_ATTR btn_isr(void *a)
 
 static void btn_task(void *arg)
 {
-    bool was = false, pending = false;
-    int presses = 0;
+    bool was = false, pending = false, holding = false;
     int64_t t_down = 0, t_short = 0;
     while (1) {
         bool idle = !was && !pending && gpio_get_level(GPIO_NUM_0);
@@ -33,21 +32,17 @@ static void btn_task(void *arg)
         int64_t now = esp_timer_get_time() / 1000;
         bool down = !gpio_get_level(GPIO_NUM_0);
         if (down && !was) t_down = now;
+        // held for 450 ms: Amber starts listening right away (no need to wait for the release)
+        if (down && was && !holding && now - t_down >= 450) { holding = true; pending = false; launcher_btn_hold(true); }
         if (!down && was) {
             int64_t dur = now - t_down;
-            if (dur >= 800) { pending = false; presses = 0; launcher_btn_long(); }
+            if (holding) { holding = false; launcher_btn_hold(false); }
             else if (dur > 30) {
-                // count quick presses; act 400 ms after the last one (so a double can still become a triple)
-                if (pending && now - t_short < 400) presses++; else presses = 1;
-                pending = true; t_short = now;
-                if (presses >= 3) { pending = false; presses = 0; launcher_btn_triple(); }
+                if (pending && now - t_short < 400) { pending = false; launcher_btn_double(); }
+                else { pending = true; t_short = now; }
             }
         }
-        if (pending && !down && now - t_short >= 400) {
-            pending = false;
-            if (presses == 2) launcher_btn_double(); else launcher_btn_short();
-            presses = 0;
-        }
+        if (pending && !down && now - t_short >= 400) { pending = false; launcher_btn_short(); }
         was = down;
     }
 }

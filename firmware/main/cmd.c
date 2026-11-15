@@ -240,6 +240,38 @@ static void print_labels(lv_obj_t *o, int depth)          // every visible label
         } else if (depth < 4) print_labels(c, depth + 1);
     }
 }
+// du [dir]: bytes per directory (recursive) and every file over 64 KB; ends with "CMD du <total>"
+#include <dirent.h>
+#include <sys/stat.h>
+static uint64_t du_walk(const char *dir, int depth)
+{
+    uint64_t total = 0;
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    struct dirent *e;
+    char p[160];
+    while ((e = readdir(d)) != NULL) {
+        snprintf(p, sizeof(p), "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(p, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            if (depth < 4) { uint64_t sub = du_walk(p, depth + 1); printf("DU dir %s %llu\n", p, (unsigned long long)sub); total += sub; }
+        } else {
+            total += st.st_size;
+            if (st.st_size > 65536) printf("DU file %s %ld\n", p, (long)st.st_size);
+        }
+    }
+    closedir(d);
+    return total;
+}
+static void cmd_du(const char *dir, int unused)
+{
+    uint64_t tot = 0, fre = 0;
+    hw_storage_info(&tot, &fre);
+    uint64_t used = du_walk(dir, 0);
+    printf("CMD du %s files=%llu fs_total=%llu fs_free=%llu\n", dir, (unsigned long long)used, (unsigned long long)tot, (unsigned long long)fre);
+}
+
 static void cmd_labels(void)
 {
     bsp_display_lock(0);
@@ -393,8 +425,8 @@ static void run_line(char *l)
         bool busy = hw_mic_owner(who, sizeof(who), what, sizeof(what), &secs, &rate);
         printf("CMD micstate busy=%d who=%s what=%s secs=%lu rate=%lu rec=%d paused=%d ptt=%d shared=%d\n", busy, who, what,
                (unsigned long)secs, (unsigned long)rate, rec_active(), rec_paused(), link_ptt_active(), link_ptt_shared());
-    } else if (sscanf(l, "btn %d", &n) == 1) {                 // tests: 1 short, 2 double, 3 triple press
-        if (n == 2) launcher_btn_double(); else if (n == 3) launcher_btn_triple(); else launcher_btn_short();
+    } else if (sscanf(l, "btn %d", &n) == 1) {                 // tests: 1 short, 2 double, 8 hold down, 9 hold released
+        if (n == 2) launcher_btn_double(); else if (n == 8) launcher_btn_hold(true); else if (n == 9) launcher_btn_hold(false); else launcher_btn_short();
         printf("CMD btn %d state=%d app=%d\n", n, launcher_state(), launcher_cur());
     } else if (sscanf(l, "recstart %d", &n) == 1) { printf("CMD recstart %d ok=%d\n", n, rec_start(n ? REC_MUSIC : REC_MEETING)); }
     else if (!strncmp(l, "recstop", 7)) { rec_stop(); printf("CMD recstop file=%s\n", rec_last_file()); }
@@ -405,6 +437,7 @@ static void run_line(char *l)
         if (ok) hw_mic_tap_close();
         printf("CMD taptest open=%d frames=%d\n", ok, got);
     } else if (!strncmp(l, "recpause", 8)) { bool on = l[8] != '0'; printf("CMD recpause %d ok=%d\n", on, rec_pause(on)); }
+    else if (!strncmp(l, "du", 2) && (l[2] == 0 || l[2] == ' ')) cmd_du(l[2] == ' ' ? l + 3 : "/flash", 0);
     else if (!strncmp(l, "schedreset", 10)) { sched_reset(); sched_test_minute(-1); printf("CMD schedreset\n"); }
     else if (!strncmp(l, "sched", 5)) sched_print();
     else if (sscanf(l, "citest %d", &n) == 1) { sched_test_minute(n); vTaskDelay(pdMS_TO_TICKS(300)); printf("CMD citest %d\n", n); }

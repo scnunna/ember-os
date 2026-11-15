@@ -360,25 +360,39 @@ void launcher_btn_long(void)
     if (s_on) screen_set(false); else launcher_wake();
     bsp_display_unlock();
 }
-void amber_double_press(void);
-void launcher_btn_double(void)                 // double press = talk to Amber (again = send)
+void amber_hold(bool down);
+void launcher_btn_hold(bool down)              // hold = talk to Amber while held
 {
     bsp_display_lock(0);
     launcher_wake();
-    amber_double_press();
+    amber_hold(down);
     bsp_display_unlock();
 }
 
-void launcher_btn_triple(void)                 // triple press = start/stop a meeting recording
+// Opens app idx from anywhere (face, grid or another app; the other app is stopped first, freeing its mic).
+void launcher_show_app(int idx)
+{
+    if (s_state == ST_APP && s_cur == idx) return;
+    if (s_state != ST_GRID) launcher_home();
+    s_state = ST_GRID;
+    launcher_open(idx);
+}
+
+void launcher_btn_double(void)                 // double press = start/stop a meeting recording
 {
     bsp_display_lock(0);
     launcher_wake();
     bool was = rec_active();
     if (rec_toggle(REC_MEETING)) ui_msg(was ? "Recording saved" : "Recording started");
+    else if (was) ui_msg("Stop failed");
     else {
-        char who[16], what[40], m[80];
-        if (hw_mic_owner(who, sizeof(who), what, sizeof(what), NULL, NULL)) { snprintf(m, sizeof(m), "Mic in use: %s (%s)", who, what); ui_msg(m); }
-        else ui_msg(was ? "Stop failed" : "Could not start recording");
+        char who[16], what[40], m[96];
+        uint64_t tot, fre; hw_storage_info(&tot, &fre);
+        if (fre < 3ULL * 1024 * 1024)
+            snprintf(m, sizeof(m), "Storage full (%.1f MB free). Save recordings to the phone: Companion > Meeting notes", fre / 1048576.0);
+        else if (hw_mic_owner(who, sizeof(who), what, sizeof(what), NULL, NULL)) snprintf(m, sizeof(m), "Mic in use: %s (%s)", who, what);
+        else snprintf(m, sizeof(m), "Could not start recording");
+        ui_msg(m);
     }
     bsp_display_unlock();
 }
