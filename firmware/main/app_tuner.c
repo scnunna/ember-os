@@ -24,6 +24,15 @@ static volatile int s_rms;
 static TaskHandle_t s_task;
 static lv_obj_t *s_note, *s_cents, *s_hz, *s_str, *s_bar, *s_hint;
 static lv_timer_t *s_tm;
+static int s_ref = 440;                // A4 reference (pref "aref"): 440 standard, 432 for the owner's solo practice
+static lv_obj_t *s_ref_lbl;
+static void ref_cb(lv_event_t *e)
+{
+    s_ref = s_ref == 440 ? 432 : 440;
+    hw_pref_set("aref", s_ref);
+    char b[16]; snprintf(b, sizeof(b), "A=%d", s_ref);
+    lv_label_set_text(s_ref_lbl, b);
+}
 
 // returns frequency or 0
 static float yin(const float *x, float *conf)
@@ -108,13 +117,20 @@ static void refresh(lv_timer_t *t)
         lv_obj_set_style_bg_color(s_bar, lv_color_hex(C_DIM), LV_PART_INDICATOR);
         return;
     }
-    float midi = 69.0f + 12.0f * log2f(f / 440.0f);
+    float ref = (float)s_ref, k = ref / 440.0f;            // A4 = 440 or 432 Hz: every target scales with it
+    float midi = 69.0f + 12.0f * log2f(f / ref);
     int n = (int)lroundf(midi);
     float cents = (midi - n) * 100.0f;
     // nearest guitar string
     int bi = 0; float bd = 1e9f;
-    for (int i = 0; i < 6; i++) { float dd = fabsf(1200.0f * log2f(f / STRINGS[i].hz)); if (dd < bd) { bd = dd; bi = i; } }
-    float sc = 1200.0f * log2f(f / STRINGS[bi].hz);
+    for (int i = 0; i < 6; i++) { float dd = fabsf(1200.0f * log2f(f / (STRINGS[i].hz * k))); if (dd < bd) { bd = dd; bi = i; } }
+    float sc = 1200.0f * log2f(f / (STRINGS[bi].hz * k));
+    // haptic: one buzz once a string has stayed within +-8 cents for 0.4 s (feel it while looking at the headstock)
+    static int buzzed = -1; static uint32_t in_since;
+    if (bd < 150 && fabsf(sc) <= 8) {
+        if (!in_since) in_since = lv_tick_get() | 1;
+        if (lv_tick_elaps(in_since) >= 400 && buzzed != bi) { hw_buzz(70); buzzed = bi; }
+    } else { in_since = 0; if (fabsf(sc) > 20) buzzed = -1; }
     char b[48];
     snprintf(b, sizeof(b), "%s%d", NOTES[((n % 12) + 12) % 12], n / 12 - 1);
     lv_label_set_text(s_note, b);
@@ -140,6 +156,11 @@ static void start(lv_obj_t *scr)
         s_tm = NULL;
         return;
     }
+    s_ref = hw_pref_get("aref", 440) == 432 ? 432 : 440;
+    char rb[16]; snprintf(rb, sizeof(rb), "A=%d", s_ref);
+    lv_obj_t *rbtn = ui_btn(scr, rb, 90, 40, 0x333333, ref_cb, NULL);
+    lv_obj_align(rbtn, LV_ALIGN_TOP_RIGHT, -24, 62);
+    s_ref_lbl = lv_obj_get_child(rbtn, 0);
     s_note = ui_label(scr, &lv_font_montserrat_48, C_TEXT, "--");
     lv_obj_align(s_note, LV_ALIGN_TOP_MID, 0, 100);
     s_cents = ui_label(scr, &lv_font_montserrat_28, C_ACCENT, "");
@@ -154,7 +175,7 @@ static void start(lv_obj_t *scr)
     lv_obj_set_style_bg_color(s_bar, lv_color_hex(0x202020), 0);
     s_str = ui_label(scr, &lv_font_montserrat_28, C_TEXT, "");
     lv_obj_align(s_str, LV_ALIGN_TOP_MID, 0, 365);
-    s_hint = ui_label(scr, &lv_font_montserrat_14, C_DIM, "E2  A2  D3  G3  B3  E4  -  pluck one string");
+    s_hint = ui_label(scr, &lv_font_montserrat_14, C_DIM, "pluck one string - buzz = in tune");
     lv_obj_align(s_hint, LV_ALIGN_BOTTOM_MID, 0, -20);
 
     s_run = true; s_exit = false;

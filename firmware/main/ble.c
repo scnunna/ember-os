@@ -18,6 +18,7 @@
 #include "app.h"
 #include "hw.h"
 #include "ble.h"
+#include "link.h"
 
 static const char *TAG = "ble";
 static void send_battery(void);
@@ -98,11 +99,16 @@ void ble_send_steps(uint32_t steps)
 }
 void ble_music(uint16_t cmd)
 {
+    if (link_ready()) {                     // Ember Companion connected: use the Ember Link message
+        const char *c = cmd == MUSIC_NEXT ? "next" : cmd == MUSIC_PREV ? "prev" : cmd == VOLUME_UP ? "vol_up" : cmd == VOLUME_DOWN ? "vol_down" : "toggle";
+        link_music(c);
+    }
     uint8_t c[] = {0xAB, 0x00, 0x04, 0xFF, (uint8_t)(cmd >> 8), 0x80, (uint8_t)cmd};
     tx_raw(c, sizeof(c));
 }
 void ble_find_phone(bool on)
 {
+    if (link_ready()) link_find_phone(on);
     uint8_t c[] = {0xAB, 0x00, 0x04, 0xFF, 0x7D, 0x80, on ? 1 : 0};
     tx_raw(c, sizeof(c));
 }
@@ -206,6 +212,13 @@ static const struct ble_gatt_svc_def GATT[] = {
          {.uuid = &UUID_RX.u, .access_cb = rx_access, .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP},
          {.uuid = &UUID_TX.u, .access_cb = tx_access, .val_handle = &s_tx_handle, .flags = BLE_GATT_CHR_F_NOTIFY},
          {0}}},
+    {.type = BLE_GATT_SVC_TYPE_PRIMARY,                       // Ember Link (docs/EMBER_LINK.md)
+     .uuid = &LINK_UUID_SVC.u,
+     .characteristics = (struct ble_gatt_chr_def[]){
+         {.uuid = &LINK_UUID_CMD.u, .access_cb = link_cmd_access, .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP},
+         {.uuid = &LINK_UUID_EVT.u, .access_cb = link_noop_access, .val_handle = &link_evt_handle, .flags = BLE_GATT_CHR_F_NOTIFY},
+         {.uuid = &LINK_UUID_AUDIO.u, .access_cb = link_noop_access, .val_handle = &link_audio_handle, .flags = BLE_GATT_CHR_F_NOTIFY},
+         {0}}},
     {0}};
 
 static int gap_event(struct ble_gap_event *ev, void *arg);
@@ -234,16 +247,21 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
 {
     switch (ev->type) {
     case BLE_GAP_EVENT_CONNECT:
-        if (ev->connect.status == 0) { s_conn = ev->connect.conn_handle; ESP_LOGI(TAG, "connected"); }
+        if (ev->connect.status == 0) { s_conn = ev->connect.conn_handle; link_on_connect(s_conn); ESP_LOGI(TAG, "connected"); }
         else advertise();
         break;
     case BLE_GAP_EVENT_DISCONNECT:
         s_conn = BLE_HS_CONN_HANDLE_NONE; s_asm_total = 0;
+        link_on_disconnect();
         ESP_LOGI(TAG, "disconnected");
         advertise();
         break;
     case BLE_GAP_EVENT_SUBSCRIBE:
         if (ev->subscribe.attr_handle == s_tx_handle && ev->subscribe.cur_notify) { send_info(); send_battery(); }
+        link_on_subscribe(ev->subscribe.attr_handle, ev->subscribe.cur_notify);
+        break;
+    case BLE_GAP_EVENT_MTU:
+        ESP_LOGI(TAG, "MTU %d", ev->mtu.value);
         break;
     case BLE_GAP_EVENT_ADV_COMPLETE: advertise(); break;
     default: break;
@@ -254,6 +272,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
 static void on_sync(void)
 {
     ble_hs_id_infer_auto(0, &s_own_addr);
+    ble_gap_set_prefered_default_le_phy(BLE_GAP_LE_PHY_2M_MASK | BLE_GAP_LE_PHY_1M_MASK, BLE_GAP_LE_PHY_2M_MASK | BLE_GAP_LE_PHY_1M_MASK);
     s_adv_wanted = true;
     advertise();
 }
@@ -283,6 +302,7 @@ void ble_start(void)
     s_enabled = hw_pref_get("ble", 1);
     s_txq = xQueueCreate(16, sizeof(txmsg_t));
     xTaskCreate(tx_task, "ble_tx", 3072, NULL, 4, NULL);
+    link_start();
     if (nimble_port_init() != ESP_OK) { ESP_LOGE(TAG, "nimble init failed"); return; }
     ble_hs_cfg.sync_cb = on_sync;
     ble_svc_gap_init();

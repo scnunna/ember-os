@@ -12,3 +12,4 @@ firmware/sdkconfig.old
 firmware/tools/*_last.log
 __pycache__/
 *.pyc
+*.bak

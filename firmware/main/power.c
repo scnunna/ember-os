@@ -79,7 +79,7 @@ static void locks(bool hold)
 // Pins that must keep their level during automatic light sleep (CONFIG_PM_SLP_DISABLE_GPIO isolates the rest).
 static void keep_pins_in_sleep(void)
 {
-    const int pins[] = {BSP_LCD_RST, BSP_LCD_TOUCH_RST, BSP_LCD_CS, BSP_POWER_AMP_IO, BSP_I2C_SCL, BSP_I2C_SDA, 0, BSP_LCD_TOUCH_INT, 21};
+    const int pins[] = {BSP_LCD_RST, BSP_LCD_TOUCH_RST, BSP_LCD_CS, BSP_POWER_AMP_IO, BSP_I2C_SCL, BSP_I2C_SDA, 0, BSP_LCD_TOUCH_INT, 21, 18 /* motor */};
     for (unsigned i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) gpio_sleep_sel_dis(pins[i]);
 }
 
@@ -174,6 +174,39 @@ static void log_line(void)
     fclose(f);
 }
 
+// ---- battery drain since unplugging (the real-world battery-life measurement) ----
+// On the USB->battery transition the time (RTC, minutes since 2000) and charge % are stored in NVS, so the number
+// survives deep sleep and reboots.
+static int now_min(void)
+{
+    struct tm t;
+    if (!hw_rtc_get(&t)) return -1;
+    return (int)((mktime(&t) - 946684800) / 60);
+}
+static void drain_track(void)
+{
+    static int last_vbus = -1;
+    batt_t b; hw_batt(&b);
+    if (!b.present) return;
+    // NVS is written only on a USB state change (never periodically: flash wear)
+    if (!b.vbus && (last_vbus == 1 || (last_vbus == -1 && hw_pref_get("unpl_t", -1) < 0))) {
+        hw_pref_set("unpl_t", now_min()); hw_pref_set("unpl_p", b.pct);
+    }
+    if (b.vbus && last_vbus != 1 && hw_pref_get("unpl_t", -1) >= 0) hw_pref_set("unpl_t", -1);
+    last_vbus = b.vbus;
+}
+void power_drain_text(char *out, size_t n)
+{
+    batt_t b; hw_batt(&b);
+    int t0 = hw_pref_get("unpl_t", -1), p0 = hw_pref_get("unpl_p", 0), now = now_min();
+    if (!b.present) { snprintf(out, n, "No battery"); return; }
+    if (b.vbus || t0 < 0 || now < t0) { snprintf(out, n, "Charge %d%%  (on USB)", b.pct); return; }
+    int mins = now - t0, used = p0 - b.pct;
+    if (mins < 30 || used <= 0) { snprintf(out, n, "Charge %d%%  measuring use... (%d min)", b.pct, mins); return; }
+    float per_h = used * 60.0f / mins;
+    snprintf(out, n, "Charge %d%%  %.1f%%/h = ~%.0f h per charge", b.pct, per_h, 100.0f / per_h);
+}
+
 // Background supervisor: battery log every 15 min, re-evaluates sleep permission, decides on deep sleep.
 static void power_task(void *a)
 {
@@ -181,6 +214,7 @@ static void power_task(void *a)
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(10000));
         int64_t now = esp_timer_get_time() / 1000;
+        drain_track();
         if (now - last_log > 15 * 60 * 1000 || last_log == 0) { last_log = now; log_line(); }
         if (s_screen_on) continue;
         bsp_display_lock(0);

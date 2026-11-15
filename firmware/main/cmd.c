@@ -12,9 +12,11 @@
 #include "esp_heap_caps.h"
 #include "esp_random.h"
 #include "driver/usb_serial_jtag.h"
+#include "hal/usb_serial_jtag_ll.h"
 #include "bsp/esp-bsp.h"
 #include "app.h"
 #include "hw.h"
+#include "link.h"
 
 static bool inter(const lv_area_t *a, const lv_area_t *b)
 {
@@ -221,18 +223,35 @@ static int collect_buttons(lv_obj_t *o, btn_spot_t *out, int n, int max)
     }
     return n;
 }
+static void print_labels(lv_obj_t *o, int depth)          // every visible label, including inside buttons/containers
+{
+    uint32_t cnt = lv_obj_get_child_count(o);
+    for (uint32_t i = 0; i < cnt; i++) {
+        lv_obj_t *c = lv_obj_get_child(o, i);
+        if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) continue;
+        if (lv_obj_check_type(c, &lv_label_class)) {
+            const char *t = lv_label_get_text(c);
+            printf(" [");
+            for (; *t; t++) putchar(*t == '\n' ? '|' : *t);      // keep one reply line per command
+            printf("]");
+        } else if (depth < 4) print_labels(c, depth + 1);
+    }
+}
 static void cmd_labels(void)
 {
     bsp_display_lock(0);
-    lv_obj_t *scr = lv_screen_active();
     printf("CMD labels:");
-    uint32_t cnt = lv_obj_get_child_count(scr);
-    for (uint32_t i = 0; i < cnt; i++) {
-        lv_obj_t *c = lv_obj_get_child(scr, i);
-        if (lv_obj_check_type(c, &lv_label_class) && !lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) printf(" [%s]", lv_label_get_text(c));
-    }
+    print_labels(lv_screen_active(), 0);
     printf("\n");
     bsp_display_unlock();
+}
+static void hold(int x, int y, int ms)                       // press, keep the finger down, release (push-to-talk tests)
+{
+    feed(true, true, x, y);
+    vTaskDelay(pdMS_TO_TICKS(ms));
+    feed(true, false, x, y);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    feed(false, false, 0, 0);
 }
 static void cmd_tapall(int times)
 {
@@ -254,6 +273,17 @@ static void cmd_tapall(int times)
 done:
     printf("CMD tapall done buttons=%d state=%d app=%d dma_free=%u\n", n, launcher_state(), launcher_cur(),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+}
+
+// A reply whose length is an exact multiple of 64 bytes fills the last USB packet completely; the PC then waits
+// for "more" and the line only shows up with the next output. Once the FIFO has drained, flush again: on an empty
+// FIFO that sends a zero-length packet = "end of transfer".
+void usj_end_packet(void)
+{
+    fflush(stdout);
+    for (int i = 0; i < 20 && !usb_serial_jtag_ll_txfifo_writable(); i++) vTaskDelay(1);
+    vTaskDelay(pdMS_TO_TICKS(3));
+    usb_serial_jtag_ll_txfifo_flush();
 }
 
 // Ember app management:  app put NAME | app hex HEX... | app end | app ls | app rm NAME | app run NAME
@@ -320,7 +350,9 @@ static void run_line(char *l)
                t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, (unsigned long)hw_steps_today(), b.pct, b.vbus,
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    } else if (sscanf(l, "tapall %d", &n) == 1) cmd_tapall(n);
+    } else if (sscanf(l, "hold %d %d %d", &h, &m, &n) == 3) { hold(h, m, n); printf("CMD hold done\n"); }
+    else if (!strncmp(l, "face", 4)) { bsp_display_lock(0); launcher_wake(); launcher_face(); bsp_display_unlock(); vTaskDelay(pdMS_TO_TICKS(1300)); printf("CMD face state=%d\n", launcher_state()); }
+    else if (sscanf(l, "tapall %d", &n) == 1) cmd_tapall(n);
     else if (!strncmp(l, "labels", 6)) cmd_labels();
     else if (sscanf(l, "tap %d %d", &h, &m) == 2) { tap(h, m); printf("CMD tap done state=%d app=%d\n", launcher_state(), launcher_cur()); }
     else if (sscanf(l, "launch %d", &n) == 1) {                  // open app n and STAY in it (built-ins 0..8, scripts after)
@@ -340,8 +372,22 @@ static void run_line(char *l)
         printf("CMD beep speaker=%s\n", ok ? "ok" : "FAIL");
     } else if (sscanf(l, "rec %d", &n) == 1) {
         bool ok = rec_start(REC_MEETING);
-        if (ok) { vTaskDelay(pdMS_TO_TICKS(n * 1000)); rec_stop(); }
-        printf("CMD rec start=%s file=%s\n", ok ? "ok" : "FAIL", ok ? rec_last_file() : "-");
+        if (ok) {
+            for (int i = 0; i < n; i++) { vTaskDelay(pdMS_TO_TICKS(1000)); if (i == 1 || i == n - 2) rec_mark(); }
+            rec_stop();
+        }
+        uint32_t fr, dr, rt; rec_stats(&fr, &dr, &rt);
+        const char *f = rec_last_file(), *sl = strrchr(f, '/');
+        uint32_t mk[8]; int nm = ok ? rec_marks_for(sl ? sl + 1 : f, mk, 8) : 0;
+        printf("CMD rec start=%s file=%s frames=%lu dropped=%lu rate=%lu marks=%d\n", ok ? "ok" : "FAIL", ok ? f : "-",
+               (unsigned long)fr, (unsigned long)dr, (unsigned long)rt, nm);
+    } else if (!strncmp(l, "link ", 5)) { link_inject(l + 5); printf("CMD link injected\n"); }   // act as the phone (tests)
+    else if (!strncmp(l, "adpcmtest", 9)) { static char hx[600]; link_adpcm_selftest(hx, sizeof(hx)); printf("CMD adpcm %s\n", hx); }
+    else if (sscanf(l, "buzz %d", &n) == 1) { hw_buzz(n); printf("CMD buzz %d\n", n); }
+    else if (!strncmp(l, "raisetest", 9)) printf("CMD raisetest fails=%d\n", hw_raise_selftest());
+    else if (!strncmp(l, "imu", 3)) { float x, y, z; hw_imu_get_g(&x, &y, &z); printf("CMD imu x=%.2f y=%.2f z=%.2f still_ms=%lu\n", x, y, z, (unsigned long)hw_imu_still_ms()); }
+    else if (!strncmp(l, "drain", 5)) { char b[120]; power_drain_text(b, sizeof(b)); printf("CMD drain %s\n", b); }
+    else if (0) {
     } else if (!strncmp(l, "app ", 4)) cmd_app(l + 4);
     else if (!strncmp(l, "pwr", 3)) {
         power_stats_t p; power_stats(&p); batt_t b; hw_batt(&b);
@@ -366,7 +412,7 @@ static void cmd_task(void *a)
         uint8_t c;
         if (usb_serial_jtag_read_bytes(&c, 1, portMAX_DELAY) != 1) continue;
         if (c == '\r' || c == '\n') {
-            if (len) { line[len] = 0; run_line(line); len = 0; }
+            if (len) { line[len] = 0; run_line(line); len = 0; usj_end_packet(); }
         } else if (len < (int)sizeof(line) - 1) line[len++] = (char)c;
     }
 }

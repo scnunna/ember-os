@@ -5,8 +5,28 @@
 #include "app.h"
 #include "hw.h"
 
-static lv_obj_t *s_status, *s_time_lbl;
+static lv_obj_t *s_status, *s_time_lbl, *s_tog[3];
 static lv_timer_t *s_tm;
+
+// three on/off toggles: power saving, vibration, raise-to-wake
+extern volatile bool s_raise_on;
+static const char *TOG_KEY[3] = {"lp", "haptic", "raise"};
+static const char *TOG_NAME[3] = {"Power save", "Vibrate", "Raise wake"};
+static const char *tog_text(int i)
+{
+    static char b[3][32];
+    snprintf(b[i], sizeof(b[i]), "%s %s", TOG_NAME[i], hw_pref_get(TOG_KEY[i], 1) ? "ON" : "OFF");
+    return b[i];
+}
+static void tog_cb(lv_event_t *e)
+{
+    int i = (int)(intptr_t)ui_ud(e);
+    int v = !hw_pref_get(TOG_KEY[i], 1);
+    hw_pref_set(TOG_KEY[i], v);
+    if (i == 2) s_raise_on = v;
+    if (i == 1 && v) hw_buzz(80);
+    lv_label_set_text(lv_obj_get_child(s_tog[i], 0), tog_text(i));
+}
 
 static void refresh(lv_timer_t *t)
 {
@@ -21,8 +41,9 @@ static void refresh(lv_timer_t *t)
              (unsigned long long)(fre / 1048576),
              hw_imu_ok() ? "ok" : "NOT FOUND",
              (unsigned long)hw_steps_today());
-    if (b.present) { char x[40]; snprintf(x, sizeof(x), "\nCharge: %d%%  (%d mV)", b.pct, b.mv); strncat(s, x, sizeof(s) - strlen(s) - 1); }
+    if (b.present) { char x[120]; x[0] = '\n'; power_drain_text(x + 1, sizeof(x) - 1); strncat(s, x, sizeof(s) - strlen(s) - 1); }
     lv_label_set_text(s_status, s);
+    for (int i = 0; i < 3; i++) if (s_tog[i]) lv_label_set_text(lv_obj_get_child(s_tog[i], 0), tog_text(i));
     struct tm tm;
     if (hw_rtc_get(&tm)) { snprintf(s, sizeof(s), "%02d:%02d", tm.tm_hour, tm.tm_min); lv_label_set_text(s_time_lbl, s); }
 }
@@ -96,11 +117,15 @@ static void start(lv_obj_t *scr)
         lv_obj_t *b = ui_btn(scr, cl[i], 84, 46, 0x333333, time_cb, (void *)(intptr_t)cv[i]);
         lv_obj_align(b, LV_ALIGN_TOP_LEFT, 27 + i * 91, 420);
     }
-    lv_obj_t *lp = ui_btn(scr, "Power saving: tap to toggle", 370, 36, 0x333333, lp_cb, NULL);
-    lv_obj_align(lp, LV_ALIGN_TOP_MID, 0, 162);
+    for (int i = 0; i < 3; i++) {
+        s_tog[i] = ui_btn(scr, tog_text(i), 118, 36, 0x333333, tog_cb, (void *)(intptr_t)i);
+        lv_obj_set_style_text_font(lv_obj_get_child(s_tog[i], 0), &lv_font_montserrat_14, 0);
+        lv_obj_align(s_tog[i], LV_ALIGN_TOP_LEFT, 20 + i * 125, 164);
+    }
+    (void)lp_cb;
     s_tm = lv_timer_create(refresh, 1000, NULL);
     refresh(NULL);
 }
-static void stop(void) { if (s_tm) { lv_timer_delete(s_tm); s_tm = NULL; } }
+static void stop(void) { if (s_tm) { lv_timer_delete(s_tm); s_tm = NULL; } memset(s_tog, 0, sizeof(s_tog)); }
 void app_settings_start(lv_obj_t *s) { start(s); }
 void app_settings_stop(void) { stop(); }

@@ -258,8 +258,14 @@ void wifi_ap_start(void)
     if (s_active) return;
     // Wi-Fi needs ~25-50 KB of internal RAM on top of Bluetooth. Running short used to crash inside the Wi-Fi blob
     // (beacon alloc fails -> NULL dereference). Refuse cleanly instead.
+    // Measured 2026-11-14: starting the hotspot takes ~59 KB of internal RAM (with BLE connected). Below that the
+    // closed-source Wi-Fi driver dereferences a failed allocation and the watch reboots -> require 64 KB + an 8 KB DMA block.
     size_t in_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    if (in_free < 30000) { ESP_LOGE(TAG, "not starting hotspot: only %u B internal RAM free", (unsigned)in_free); return; }
+    size_t dma_big = heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (in_free < 64 * 1024 || dma_big < 8 * 1024) {
+        ESP_LOGE(TAG, "not starting hotspot: %u B internal free, largest DMA block %u B", (unsigned)in_free, (unsigned)dma_big);
+        return;
+    }
     if (!s_inited) {
         esp_netif_init();
         esp_event_loop_create_default();
@@ -285,7 +291,13 @@ void wifi_ap_start(void)
     esp_wifi_set_mode(WIFI_MODE_AP);
     esp_wifi_set_config(WIFI_IF_AP, &wc);
     esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-    if (esp_wifi_start() != ESP_OK) { ESP_LOGE(TAG, "wifi start failed"); return; }
+    if (esp_wifi_start() != ESP_OK) {
+        ESP_LOGE(TAG, "wifi start failed");
+        esp_wifi_deinit();                                   // give the memory back
+        if (s_netif) { esp_netif_destroy_default_wifi(s_netif); s_netif = NULL; }
+        s_inited = false;
+        return;
+    }
     start_httpd();
     s_last_req = esp_timer_get_time();
     s_active = true;
@@ -299,5 +311,10 @@ void wifi_ap_stop(void)
     s_active = false;
     if (s_httpd) { httpd_stop(s_httpd); s_httpd = NULL; }
     esp_wifi_stop();
+    // Unload the driver completely: a stopped-but-initialised Wi-Fi keeps ~50 KB of internal RAM that BLE, audio
+    // and the display need. Next start re-initialises (adds ~0.3 s).
+    esp_wifi_deinit();
+    if (s_netif) { esp_netif_destroy_default_wifi(s_netif); s_netif = NULL; }
+    s_inited = false;
     ESP_LOGI(TAG, "AP down");
 }

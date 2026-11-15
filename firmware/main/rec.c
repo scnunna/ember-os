@@ -29,6 +29,37 @@ static volatile bool s_cap_done;
 static volatile uint32_t s_dropped, s_frames;
 static int64_t s_cap_t0;
 
+// ---- bookmarks: tap "Mark" (or the link) during a recording; saved as <file>.marks (one ms offset per line) ----
+#define MAX_MARKS 64
+static uint32_t s_marks[MAX_MARKS];
+static int s_nmarks;
+void rec_mark(void)
+{
+    if (!s_active || s_nmarks >= MAX_MARKS) return;
+    s_marks[s_nmarks++] = (uint32_t)((esp_timer_get_time() - s_cap_t0) / 1000);
+    hw_buzz(40);
+}
+static void save_marks(void)
+{
+    if (!s_nmarks) return;
+    char p[128]; snprintf(p, sizeof(p), "%.*s.marks", (int)(strlen(s_file) - 4), s_file);
+    FILE *f = fopen(p, "w");
+    if (!f) return;
+    for (int i = 0; i < s_nmarks; i++) fprintf(f, "%lu\n", (unsigned long)s_marks[i]);
+    fclose(f);
+}
+int rec_marks_for(const char *wav_name, uint32_t *out, int max)
+{
+    char p[128]; snprintf(p, sizeof(p), "%s/rec/%.*s.marks", hw_storage_root(), (int)(strlen(wav_name) > 4 ? strlen(wav_name) - 4 : 0), wav_name);
+    FILE *f = fopen(p, "r");
+    if (!f) return 0;
+    int n = 0; unsigned long v;
+    while (n < max && fscanf(f, "%lu", &v) == 1) out[n++] = v;
+    fclose(f);
+    return n;
+}
+void rec_stats(uint32_t *frames, uint32_t *dropped, uint32_t *rate) { *frames = s_frames; *dropped = s_dropped; *rate = s_rate; }
+
 bool rec_active(void) { return s_active; }
 rec_mode_t rec_mode(void) { return s_mode; }
 int rec_level(void) { return s_level; }
@@ -78,6 +109,7 @@ static void writer_task(void *arg)
         }
     }
     if (f) { wav_header(f, s_rate, total); fclose(f); }
+    save_marks();
     free(blk);
     int64_t ms = (esp_timer_get_time() - s_cap_t0) / 1000;
     ESP_LOGI(TAG, "saved %s (%lu bytes)  captured %lu frames in %lld ms = %.0f Hz (asked %lu)  dropped=%lu",
@@ -132,7 +164,7 @@ bool rec_start(rec_mode_t m)
     if (!s_sb) { hw_mic_close(); return false; }
     s_mode = m;
     s_stop = false; s_cap_done = false; s_done = false; s_active = true;
-    s_frames = 0; s_dropped = 0;
+    s_frames = 0; s_dropped = 0; s_nmarks = 0;
     s_t0 = lv_tick_get();
     xTaskCreate(writer_task, "recw", 6144, NULL, 3, NULL);
     xTaskCreate(rec_task, "rec", 6144, NULL, 5, NULL);

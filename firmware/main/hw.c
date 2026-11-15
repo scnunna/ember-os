@@ -16,6 +16,8 @@
 #include "bsp/esp-bsp.h"
 #include "esp_codec_dev.h"
 #include "hw.h"
+#include "app.h"
+#include "driver/gpio.h"
 
 static const char *TAG = "hw";
 
@@ -139,6 +141,7 @@ static struct { uint32_t date; uint32_t d[7]; } s_hist;  // d[0] = today
 static uint32_t s_saved_steps;
 
 static volatile uint32_t s_still_ms;
+volatile bool s_raise_on = true;        // mirrors pref "raise" (Settings toggles it)
 bool hw_imu_ok(void) { return s_imu_ok; }
 uint32_t hw_imu_still_ms(void) { return s_imu_ok ? s_still_ms : 0; }
 
@@ -161,6 +164,84 @@ bool hw_imu_wom_arm(void)
     return (st & 0x80) != 0;
 }
 void hw_imu_get_g(float *x, float *y, float *z) { *x = s_gx; *y = s_gy; *z = s_gz; }
+
+// ---------------------------------------------------------------- haptics (motor driver on GPIO18, active high;
+// pin found in Waveshare's factory firmware "VibrationTest"). Non-blocking: an esp_timer switches it off / steps patterns.
+#define MOTOR_GPIO 18
+static esp_timer_handle_t s_motor_t;
+static volatile int s_pat_left, s_pat_on, s_pat_off;
+static volatile bool s_motor_on;
+static void motor_cb(void *a)
+{
+    if (s_motor_on) {
+        gpio_set_level(MOTOR_GPIO, 0); s_motor_on = false;
+        if (s_pat_left > 0) esp_timer_start_once(s_motor_t, (uint64_t)s_pat_off * 1000);
+    } else if (s_pat_left > 0) {
+        s_pat_left--;
+        gpio_set_level(MOTOR_GPIO, 1); s_motor_on = true;
+        esp_timer_start_once(s_motor_t, (uint64_t)s_pat_on * 1000);
+    }
+}
+void hw_buzz_pattern(int count, int on_ms, int off_ms)
+{
+    if (!s_motor_t || count <= 0 || !hw_pref_get("haptic", 1)) return;
+    if (on_ms > 2000) on_ms = 2000;
+    esp_timer_stop(s_motor_t);
+    s_pat_on = on_ms; s_pat_off = off_ms; s_pat_left = count - 1;
+    gpio_set_level(MOTOR_GPIO, 1); s_motor_on = true;
+    esp_timer_start_once(s_motor_t, (uint64_t)on_ms * 1000);
+}
+void hw_buzz(int ms) { hw_buzz_pattern(1, ms, 0); }
+static void motor_init(void)
+{
+    gpio_config_t io = {.pin_bit_mask = 1ULL << MOTOR_GPIO, .mode = GPIO_MODE_OUTPUT};
+    gpio_config(&io);
+    gpio_set_level(MOTOR_GPIO, 0);
+    esp_timer_create_args_t a = {.callback = motor_cb, .name = "motor"};
+    esp_timer_create(&a, &s_motor_t);
+}
+
+// ---------------------------------------------------------------- raise-to-wake (pure detector + synthetic self-test)
+// "Face up" = gravity mostly along the screen normal. On this board the screen-up reading is z = -1 g (measured on a
+// desk), so the sign is a pref ("rsign", default -1) in case a strap mounts it differently.
+// Trigger: the watch becomes face-up (tilt up to ~50 deg toward the eyes allowed) within 1.5 s after NOT being face-up,
+// and stays face-up for 200 ms. Lying on a desk never re-triggers (needs a fresh not-face-up -> face-up transition).
+static int s_rsign = -1;
+bool hw_raise_feed(raise_t *r, float x, float y, float z, int64_t t)
+{
+    bool up = (s_rsign * z > 0.6f) && fabsf(x) < 0.6f && fabsf(y) < 0.8f;
+    if (s_rsign * z < 0.2f) r->t_notup = t;                 // "far": screen vertical or facing away
+    if (!up) { r->t_up_since = 0; r->armed = true; return false; }
+    if (r->t_up_since == 0) r->t_up_since = t;
+    // a real raise turns the screen from far to face-up in under a second; a slow put-down does not
+    if (r->armed && t - r->t_up_since >= 200 && r->t_notup && r->t_up_since - r->t_notup <= 1000) { r->armed = false; return true; }
+    return false;
+}
+int hw_raise_selftest(void)
+{
+    int fails = 0, s = s_rsign;
+    raise_t r;
+    // 1) arm hanging (gravity along x) -> raise -> face up: must trigger exactly once
+    memset(&r, 0, sizeof(r)); int hits = 0; int64_t t = 1000;
+    for (int i = 0; i < 25; i++, t += 20) hits += hw_raise_feed(&r, -1.0f, 0.0f, 0.0f, t);
+    for (int i = 0; i < 15; i++, t += 20) { float k = i / 15.0f; hits += hw_raise_feed(&r, -1.0f + k, 0.2f, s * k, t); }
+    for (int i = 0; i < 40; i++, t += 20) hits += hw_raise_feed(&r, 0.05f, 0.35f, s * 0.92f, t);
+    if (hits != 1) { fails++; printf("RAISE FAIL arm-up hits=%d\n", hits); }
+    // 2) lying face-up on a desk for 10 s: never
+    memset(&r, 0, sizeof(r)); hits = 0; t = 1000;
+    for (int i = 0; i < 500; i++, t += 20) hits += hw_raise_feed(&r, 0.0f, 0.0f, s * 1.0f, t);
+    if (hits != 0) { fails++; printf("RAISE FAIL desk hits=%d\n", hits); }
+    // 3) face-down / sideways shaking: never
+    memset(&r, 0, sizeof(r)); hits = 0; t = 1000;
+    for (int i = 0; i < 300; i++, t += 20) hits += hw_raise_feed(&r, (i % 7) * 0.2f - 0.6f, 0.9f, -s * 0.4f, t);
+    if (hits != 0) { fails++; printf("RAISE FAIL shake hits=%d\n", hits); }
+    // 4) slow drift onto the desk over 5 s (put down): never
+    memset(&r, 0, sizeof(r)); hits = 0; t = 1000;
+    for (int i = 0; i < 250; i++, t += 20) { float k = i / 250.0f; hits += hw_raise_feed(&r, -1.0f + k, 0, s * k, t); }
+    for (int i = 0; i < 100; i++, t += 20) hits += hw_raise_feed(&r, 0, 0, s * 1.0f, t);
+    if (hits != 0) { fails++; printf("RAISE FAIL slow-putdown hits=%d\n", hits); }
+    return fails;
+}
 
 static uint32_t today_key(void)
 {
@@ -216,6 +297,7 @@ static void imu_task(void *arg)
     // wake-up instead of 50); any change > 0.06 g snaps back to 50 Hz. A step cluster needs 4 peaks, so nothing is lost.
     float sx = 0, sy = 0, sz = 0;
     int64_t still_since = esp_timer_get_time() / 1000;
+    raise_t rz = {0};
     while (1) {
         int64_t t = esp_timer_get_time() / 1000;
         bool slow = (t - still_since) > 10000;
@@ -227,7 +309,8 @@ static void imu_task(void *arg)
         s_gx = gx; s_gy = gy; s_gz = gz;
         if (fabsf(gx - sx) + fabsf(gy - sy) + fabsf(gz - sz) > 0.06f) { still_since = esp_timer_get_time() / 1000; sx = gx; sy = gy; sz = gz; }
         s_still_ms = (uint32_t)(esp_timer_get_time() / 1000 - still_since);
-        if (slow) continue;                              // filter state only advances at its design rate (50 Hz)
+        if (s_raise_on && hw_raise_feed(&rz, gx, gy, gz, esp_timer_get_time() / 1000)) launcher_raise();
+        if (slow) continue;                             // filter state only advances at its design rate (50 Hz)
         float mag = sqrtf(gx * gx + gy * gy + gz * gz);
         mean += 0.02f * (mag - mean);
         lp += 0.35f * ((mag - mean) - lp);
@@ -396,6 +479,9 @@ void hw_init(void)
     nvs_open("watch", NVS_READWRITE, &s_nvs);
     pmu_init();
     rtc_init();
+    motor_init();
+    s_rsign = hw_pref_get("rsign", -1) < 0 ? -1 : 1;
+    s_raise_on = hw_pref_get("raise", 1);
     imu_init();
     hw_audio_preinit();
     hw_storage_remount();

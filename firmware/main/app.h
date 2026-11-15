@@ -46,7 +46,7 @@ void power_stats(power_stats_t *s);
 int  power_wake_cause(void);
 
 // ---- Ember scripted apps (script.c) ----
-#define EMBER_VERSION "1.0"
+#define EMBER_VERSION "1.1"
 void script_init(void);                 // install sample apps on first boot, scan /flash/apps
 int  script_count(void);
 const char *script_name(int i);
@@ -62,6 +62,13 @@ bool script_put_data(const void *d, size_t n);
 bool script_put_end(void);
 bool script_remove(const char *name);
 void launcher_rebuild_grid(void);
+void launcher_raise(void);              // wrist raised (from the IMU task): light the screen if it is dark
+// ---- recorder extras ----
+void rec_mark(void);                    // bookmark "this moment" in the current recording
+void rec_stats(uint32_t *frames, uint32_t *dropped, uint32_t *rate);   // of the last/current recording
+int  rec_marks_for(const char *wav_name, uint32_t *out, int max);      // bookmarks (ms) saved next to a recording
+// ---- battery ----
+void power_drain_text(char *out, size_t n);   // "On battery 2 h 10 min, used 7 % (3.2 %/h, ~31 h total)"
 void launcher_open_script(const char *name);
 
 // ---- buttons ----
@@ -98,3 +105,4 @@ lv_obj_t *ui_btn(lv_obj_t *p, const char *txt, int w, int h, uint32_t color, lv_
 void ui_msg(const char *txt);
 void *ui_ud(lv_event_t *e);          // user data of a ui_btn() callback
 void cmd_start(void);                // USB serial dev shell
+void usj_end_packet(void);           // make the PC see a reply whose length is a multiple of 64 bytes

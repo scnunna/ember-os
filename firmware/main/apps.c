@@ -10,6 +10,9 @@ void app_sound_start(lv_obj_t *s);    void app_sound_stop(void);
 void app_remote_start(lv_obj_t *s);   void app_remote_stop(void);
 void app_phone_start(lv_obj_t *s);    void app_phone_stop(void);
 void app_settings_start(lv_obj_t *s); void app_settings_stop(void);
+void app_notes_start(lv_obj_t *s);    void app_notes_stop(void);
+void app_translate_start(lv_obj_t *s); void app_translate_stop(void);
+void app_practice_start(lv_obj_t *s); void app_practice_stop(void);
 
 const app_t APPS[] = {
     {"Steps",    LV_SYMBOL_GPS,       0x1F9D8A, app_steps_start,    app_steps_stop},
@@ -21,5 +24,8 @@ const app_t APPS[] = {
     {"Remote",   LV_SYMBOL_KEYBOARD,  0x5C6BC0, app_remote_start,   app_remote_stop},
     {"Phone",    LV_SYMBOL_BLUETOOTH, 0x2D6CDF, app_phone_start,    app_phone_stop},
     {"Settings", LV_SYMBOL_SETTINGS,  0x6B6B6B, app_settings_start, app_settings_stop},
+    {"Notes",    LV_SYMBOL_FILE,      0xF4A261, app_notes_start,    app_notes_stop},
+    {"Translate",LV_SYMBOL_LOOP,      0xE76F51, app_translate_start,app_translate_stop},
+    {"Practice", LV_SYMBOL_PLAY,      0x9B5DE5, app_practice_start, app_practice_stop},
 };
 const int APP_COUNT = sizeof(APPS) / sizeof(APPS[0]);

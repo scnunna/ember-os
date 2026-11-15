@@ -5,10 +5,11 @@
 #include "hw.h"
 #include "ble.h"
 #include "wifi.h"
+#include "link.h"
 
 #define STEP_GOAL 8000
 
-static lv_obj_t *s_ind, *s_bell, *s_time, *s_date, *s_arc, *s_steps, *s_batt, *s_rec, *s_hint, *s_store;
+static lv_obj_t *s_ind, *s_bell, *s_time, *s_date, *s_arc, *s_steps, *s_batt, *s_rec, *s_hint, *s_store, *s_wx;
 static uint32_t s_last_clock, s_last_batt;
 static batt_t s_b;
 
@@ -20,6 +21,8 @@ void face_create(lv_obj_t *scr)
     lv_obj_align(s_bell, LV_ALIGN_TOP_LEFT, 16, 10);
     s_time = ui_label(scr, &lv_font_montserrat_48, C_TEXT, "--:--");
     lv_obj_align(s_time, LV_ALIGN_TOP_MID, 0, 38);
+    s_wx = ui_label(scr, &lv_font_montserrat_14, C_DIM, "");       // weather from the phone (Ember Companion)
+    lv_obj_align(s_wx, LV_ALIGN_TOP_MID, 0, 130);
     s_date = ui_label(scr, &lv_font_montserrat_20, C_DIM, "");
     lv_obj_align(s_date, LV_ALIGN_TOP_MID, 0, 104);
 
@@ -82,7 +85,9 @@ void face_tick(void)
         if (wifi_ap_active()) strcat(ind, LV_SYMBOL_WIFI);
         lv_label_set_text(s_ind, ind);
         lv_obj_align(s_ind, LV_ALIGN_TOP_RIGHT, -16, 10);
-        int un = ble_notif_unread();
+        int un = ble_notif_unread() + link_notif_unread();
+        char wx[40];
+        lv_label_set_text(s_wx, link_weather(wx, sizeof(wx)) ? wx : "");
         if (un > 0) { snprintf(b, sizeof(b), LV_SYMBOL_BELL " %d", un); lv_label_set_text(s_bell, b); } else lv_label_set_text(s_bell, "");
 
         if (rec_active()) {

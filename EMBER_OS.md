@@ -1,6 +1,31 @@
-# Ember OS 1.0 — power-first, programmable OS for the Waveshare ESP32-S3-Touch-AMOLED-2.06
+# Ember OS 1.1 — power-first, programmable OS for the Waveshare ESP32-S3-Touch-AMOLED-2.06
 
-Ember OS runs on the bare ESP32-S3 (ESP-IDF 5.5 + FreeRTOS + LVGL 9.5). You write watch apps in **Lua**. You can install one over USB or from your phone over the watch's own Wi-Fi hotspot, with **no reflashing**. Everything stays local: no cloud and no account.
+Ember OS runs on the bare ESP32-S3 (ESP-IDF 5.5 + FreeRTOS + LVGL 9.5). You write watch apps in **Lua**. You can install one over USB, over Bluetooth from the phone app, or over the watch's own Wi-Fi hotspot, with **no reflashing**. Everything stays local: no cloud and no account.
+
+## New in 1.1 (roadmap P0–P4)
+- **Haptics.** Vibration motor on GPIO18, plus `w.buzz(ms, count, gap)` for Lua apps. Used for notifications, an "in tune" buzz in the Tuner, a silent metronome beat and practice cues. Settings → *Vibrate*.
+- **Raise-to-wake.** Lifting the wrist lights the screen. Settings → *Raise wake*. Synthetic self-test: `raisetest` (4 scenarios).
+- **Battery drain.** Settings shows %/h and estimated hours per charge, measured from the last unplug.
+- **Recorder.** No dropped audio even on internal flash (30 s test: 0 dropped samples). **Mark** button for bookmarks, which travel with the recording to the phone.
+- **Ember Link** (`docs/EMBER_LINK.md`): our own Bluetooth protocol for the **Ember Companion** Android app (`companion/`). It carries time, notifications with **quick replies**, weather, steps → Health Connect, Lua app install and remove, recordings + Wi-Fi download, meeting summaries, translation audio, the practice log and the music remote. Chronos still works alongside it.
+- **New apps.**
+  - **Notes:** meeting summaries and action items sent back from the phone.
+  - **Translate:** hold *Me* or *Them* and speak. The phone translates offline and speaks the result; the watch shows it in large text.
+  - **Practice:** 1-minute chord-change trainer, session timer, weekly minutes and streak.
+- **Upgraded apps.**
+  - Metronome: *Vibe* (silent haptic beat) and *Speed* trainer (+2/+5/+10 BPM every 4 bars); sessions are logged.
+  - Tuner: A=440/432 switch and a buzz when a string stays in tune.
+- **Memory hardening.** Internal RAM is the scarce resource on this board.
+  - Audio is claimed at boot.
+  - BLE, Wi-Fi/LWIP and big buffers live in PSRAM.
+  - Wi-Fi unloads completely when the hotspot turns off.
+  - The hotspot refuses to start below 64 KB free instead of crashing.
+- **Test suites** (run all after any change):
+  - `tools/ember_test.py`: 32 OS checks
+  - `tools/apps_test.py`: 25 checks, every app and every button, real taps
+  - `tools/link_usb_test.py`: 20 protocol checks over USB
+  - `tools/link_ble_test.py`: protocol over real Bluetooth, the laptop acting as the phone
+  - `tools/e2e.py`: layout, touch and navigation
 
 ## The hardware (read from this board on 2026-11-13)
 | Part | Chip | Notes |

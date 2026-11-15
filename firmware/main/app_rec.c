@@ -4,7 +4,8 @@
 #include "app.h"
 #include "hw.h"
 
-static lv_obj_t *s_btn, *s_btn_lbl, *s_time, *s_bar, *s_mode_lbl, *s_info, *s_file;
+static lv_obj_t *s_btn, *s_btn_lbl, *s_time, *s_bar, *s_mode_lbl, *s_info, *s_file, *s_mark;
+static void mark_cb(lv_event_t *e) { rec_mark(); ui_msg("Bookmarked"); }
 static lv_timer_t *s_tm;
 static int s_mode;     // 0 meeting 1 music
 
@@ -19,6 +20,7 @@ static void refresh(lv_timer_t *t)
     lv_bar_set_value(s_bar, a ? rec_level() : 0, LV_ANIM_OFF);
     lv_label_set_text(s_btn_lbl, a ? LV_SYMBOL_STOP : LV_SYMBOL_AUDIO);
     lv_obj_set_style_bg_color(s_btn, lv_color_hex(a ? 0x444444 : C_WARN), 0);
+    if (a) lv_obj_remove_flag(s_mark, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(s_mark, LV_OBJ_FLAG_HIDDEN);
     int m = a ? (int)rec_mode() : s_mode;
     lv_label_set_text(s_mode_lbl, m ? "MUSIC   44.1 kHz" : "MEETING   16 kHz");
     uint64_t tot, fre;
@@ -69,6 +71,9 @@ static void start(lv_obj_t *scr)
     lv_obj_align(s_btn, LV_ALIGN_TOP_MID, 0, 270);
     s_btn_lbl = lv_obj_get_child(s_btn, 0);
     lv_obj_set_style_text_font(s_btn_lbl, &lv_font_montserrat_48, 0);
+    s_mark = ui_btn(scr, LV_SYMBOL_OK " Mark", 100, 60, 0xEDAE49, mark_cb, NULL);    // bookmark this moment (meeting notes)
+    lv_obj_align(s_mark, LV_ALIGN_TOP_RIGHT, -18, 305);
+    lv_obj_add_flag(s_mark, LV_OBJ_FLAG_HIDDEN);
 
     s_file = ui_label(scr, &lv_font_montserrat_14, C_DIM, "");
     lv_obj_align(s_file, LV_ALIGN_BOTTOM_MID, 0, -62);

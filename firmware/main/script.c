@@ -401,6 +401,12 @@ static int w_beep(lua_State *l)
     hw_beep(hz, ms, hw_pref_get("vol", 70));
     return 0;
 }
+static int w_buzz(lua_State *l)
+{
+    int ms = opt_num(l, 1, 60), count = opt_num(l, 2, 1), gap = opt_num(l, 3, 120);
+    hw_buzz_pattern(count < 1 ? 1 : (count > 5 ? 5 : count), ms < 10 ? 10 : (ms > 800 ? 800 : ms), gap);
+    return 0;
+}
 static int w_toast(lua_State *l) { ui_msg(luaL_checkstring(l, 1)); return 0; }
 static int w_millis(lua_State *l) { lua_pushinteger(l, (lua_Integer)(esp_timer_get_time() / 1000)); return 1; }
 
@@ -473,7 +479,7 @@ static const luaL_Reg W[] = {
     {"title", w_title}, {"label", w_label}, {"button", w_button}, {"circle", w_circle}, {"bar", w_bar},
     {"value", w_value}, {"text", w_text}, {"color", w_color}, {"move", w_move}, {"show", w_show},
     {"every", w_every}, {"cancel", w_cancel}, {"time", w_time}, {"date", w_date}, {"steps", w_steps},
-    {"battery", w_battery}, {"imu", w_imu}, {"beep", w_beep}, {"toast", w_toast}, {"millis", w_millis},
+    {"battery", w_battery}, {"imu", w_imu}, {"beep", w_beep}, {"buzz", w_buzz}, {"toast", w_toast}, {"millis", w_millis},
     {"load", w_load}, {"save", w_save}, {NULL, NULL},
 };
 

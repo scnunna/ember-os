@@ -52,7 +52,8 @@ for _ in range(10):                      # the watch may still be booting (e.g. 
     if r: break
 scripts = r.split(':', 1)[1].split() if r and ':' in r else []
 check(len(scripts) >= 3, 'scripted apps found', r)
-apps = ['Steps', 'Recorder', 'Tuner', 'Metronome', 'Timer', 'Sound', 'Remote', 'Phone', 'Settings'] + scripts
+BUILTIN = ['Steps', 'Recorder', 'Tuner', 'Metronome', 'Timer', 'Sound', 'Remote', 'Phone', 'Settings', 'Notes', 'Translate', 'Practice']
+apps = BUILTIN + scripts
 up0, wall0 = uptime(), time.time()
 
 for idx, name in enumerate(apps):
@@ -75,7 +76,7 @@ for idx, name in enumerate(apps):
 
 # ---- functional checks of the scripted apps ----
 def app_index(n):
-    return 9 + scripts.index(n) if n in scripts else None
+    return len(BUILTIN) + scripts.index(n) if n in scripts else None
 
 if 'counter' in scripts:
     ask(f'launch {app_index("counter")}', 'CMD launch')

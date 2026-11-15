@@ -53,7 +53,7 @@ r = ember.ask(s, 'beep', 'CMD beep', 6)
 check(r is not None and 'speaker=ok' in r, 'speaker works after Bluetooth + display are up (Metronome/Timer/Dice path)', r)
 r = ember.ask(s, 'rec 2', 'CMD rec', 10)
 check(r is not None and 'start=ok' in r, 'microphone recording works (Recorder/Tuner/Sound path)', r)
-for i, name in enumerate(['Steps', 'Recorder', 'Tuner', 'Metronome', 'Timer', 'Sound', 'Remote', 'Phone', 'Settings']):
+for i, name in enumerate(['Steps', 'Recorder', 'Tuner', 'Metronome', 'Timer', 'Sound', 'Remote', 'Phone', 'Settings', 'Notes', 'Translate', 'Practice']):
     r = ember.ask(s, f'open {i}', 'CMD open', 8)
     check(r is not None, f'built-in app {name} opens and closes without a crash', r)
 r = ember.ask(s, 'beep', 'CMD beep', 6)
@@ -122,10 +122,18 @@ check(r is not None and 'wakes=' in r and int(r.split('wakes=')[1].split()[0]) >
 check(r is not None and 'sleep_allowed=0' in r, 'no light sleep while on USB power (keeps the USB link alive)', r)
 
 # 8. cleanup
-for n in ('t_api', 't_loop', 't_bad', 't_mem', 't_tmr'):
-    ember.ask(s, f'app rm {n}', 'CMD app rm')
+# regression 2026-11-14: rapid install/remove while the screen slides used to hang LVGL's layout (task watchdog)
+stress_ok = 0
+for trial in range(3):
+    for n in ('r1', 'r2', 'r3', 'r4'): push(n, f"function start() w.title('{n}') end")
+    ember.ask(s, 'app run r4', 'CMD app run', 5, sink=[])
+    rs = [ember.ask(s, f'app rm {n}', 'CMD app rm', 6) for n in ('r1', 'r2', 'r3', 'r4')]
+    stress_ok += all(r and r.endswith('ok') for r in rs) and ember.ask(s, 'pwr', 'CMD pwr', 4) is not None
+check(stress_ok == 3, 'rapid app install/remove during screen animations never hangs the UI', f'{stress_ok}/3 rounds')
+
+rm_replies = {n: ember.ask(s, f'app rm {n}', 'CMD app rm', 6) for n in ('t_api', 't_loop', 't_bad', 't_mem', 't_tmr')}
 r = ember.ask(s, 'app ls', 'CMD app ls')
-check(r is not None and 't_' not in r, 'test apps removed', r)
+check(r is not None and 't_' not in r, 'test apps removed', f'{r}  rm replies: {rm_replies}')
 ember.ask(s, 'screen on', 'CMD screen')
 
 print(f'EMBER TESTS DONE pass={sum(res)} fail={len(res) - sum(res)}')

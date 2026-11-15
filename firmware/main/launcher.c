@@ -33,6 +33,13 @@ static void screen_set(bool on)
     script_pause(!on);
 }
 bool launcher_screen_on(void) { return s_on; }
+void launcher_raise(void)
+{
+    if (s_on && !s_dim) return;
+    bsp_display_lock(0);
+    launcher_wake();
+    bsp_display_unlock();
+}
 
 void launcher_wake(void)
 {
@@ -172,11 +179,27 @@ static void build_grid(void)
     fill_grid();
 }
 
-// After an app was installed/removed (USB or Wi-Fi). Caller holds the LVGL lock.
+// After an app was installed/removed (USB, Wi-Fi or Bluetooth). Caller holds the LVGL lock.
+// The grid is NOT rebuilt immediately: rebuilding (lv_obj_clean + recreate) while a screen-slide animation is still
+// running, several times in quick succession, sent LVGL's layout pass into an endless loop (task watchdog on
+// taskLVGL). Requests are coalesced into one rebuild 500 ms later, after any animation and delayed delete are done.
+static lv_timer_t *s_rebuild_tmr;
+static void rebuild_cb(lv_timer_t *t)
+{
+    s_rebuild_tmr = NULL;                 // one-shot (repeat count 1): LVGL deletes the timer after this call
+    if (lv_anim_count_running()) {        // still sliding: try again shortly
+        s_rebuild_tmr = lv_timer_create(rebuild_cb, 200, NULL);
+        lv_timer_set_repeat_count(s_rebuild_tmr, 1);
+        return;
+    }
+    fill_grid();
+}
 void launcher_rebuild_grid(void)
 {
     if (s_state == ST_APP) launcher_home();
-    fill_grid();
+    if (s_rebuild_tmr) { lv_timer_reset(s_rebuild_tmr); return; }
+    s_rebuild_tmr = lv_timer_create(rebuild_cb, 500, NULL);
+    lv_timer_set_repeat_count(s_rebuild_tmr, 1);
 }
 
 void launcher_open_script(const char *name)
