@@ -92,6 +92,28 @@ static void pmu_init(void)
     if (rr(s_axp, 0x30, &r, 1) == ESP_OK) wr1(s_axp, 0x30, r | 0x01);   // VBAT ADC on
     if (rr(s_axp, 0x18, &r, 1) == ESP_OK) wr1(s_axp, 0x18, r | 0x08);   // fuel gauge on
     if (rr(s_axp, 0x68, &r, 1) == ESP_OK) wr1(s_axp, 0x68, r | 0x01);   // battery detect on
+    // Power button (PWRON): holding 6 s switches the device off (done by the AXP2101 itself, works even if the firmware
+    // hangs); a short press is latched in IRQ status 1 (0x49) bit 3 and read by hw_pwrkey_short().
+    if (rr(s_axp, 0x27, &r, 1) == ESP_OK) wr1(s_axp, 0x27, (r & ~0x0C) | (1 << 2));   // OFFLEVEL bits 3:2 = 01 -> 6 s
+    if (rr(s_axp, 0x22, &r, 1) == ESP_OK) wr1(s_axp, 0x22, (r | 0x02) & ~0x04);       // long press = power off (not restart)
+    if (rr(s_axp, 0x41, &r, 1) == ESP_OK) wr1(s_axp, 0x41, r | 0x0C);                 // latch short + long press
+    wr1(s_axp, 0x49, 0x0C);                                                              // clear stale presses
+}
+
+// 1 = the power button was clicked since the last call (and the latch is cleared), 0 = no, -1 = PMU not readable
+int hw_pwrkey_short(void)
+{
+    uint8_t st = 0;
+    if (!s_axp || rr(s_axp, 0x49, &st, 1) != ESP_OK) return -1;
+    if (!(st & 0x0C)) return 0;
+    wr1(s_axp, 0x49, st & 0x0C);                // write-1-to-clear
+    return (st & 0x08) ? 1 : 0;                 // bit 3 short press (bit 2 = long press, handled by the PMU)
+}
+
+void hw_pmu_regs(uint8_t out[4])               // 0x22, 0x27, 0x41, 0x49 (USB shell "pmu")
+{
+    const uint8_t regs[4] = {0x22, 0x27, 0x41, 0x49};
+    for (int i = 0; i < 4; i++) { out[i] = 0xEE; if (s_axp) rr(s_axp, regs[i], &out[i], 1); }
 }
 
 // ---------------------------------------------------------------- RTC (PCF85063A)

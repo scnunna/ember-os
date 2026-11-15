@@ -438,6 +438,7 @@ static void run_line(char *l)
         printf("CMD taptest open=%d frames=%d\n", ok, got);
     } else if (!strncmp(l, "recpause", 8)) { bool on = l[8] != '0'; printf("CMD recpause %d ok=%d\n", on, rec_pause(on)); }
     else if (!strncmp(l, "du", 2) && (l[2] == 0 || l[2] == ' ')) cmd_du(l[2] == ' ' ? l + 3 : "/flash", 0);
+    else if (!strncmp(l, "pmu", 3)) { uint8_t r[4]; hw_pmu_regs(r); printf("CMD pmu r22=%02x r27=%02x r41=%02x r49=%02x\n", r[0], r[1], r[2], r[3]); }
     else if (!strncmp(l, "schedreset", 10)) { sched_reset(); sched_test_minute(-1); printf("CMD schedreset\n"); }
     else if (!strncmp(l, "sched", 5)) sched_print();
     else if (sscanf(l, "citest %d", &n) == 1) { sched_test_minute(n); vTaskDelay(pdMS_TO_TICKS(300)); printf("CMD citest %d\n", n); }

@@ -17,10 +17,11 @@ Last updated 2026-11-15 10:40 local.
 - Amber replies are 1-4 short bullet lines (Life OS server cutReply + prompt); the watch keeps '
 '.
 
-## Proposed next (owner asked "what do you think"): PWR button
-- PWR click = screen on/off, PWR hold = device off/on (AXP2101 hardware; options 4/6/8/10 s, suggest 6 s),
-  PWR double = Tuner (if the owner confirms he wants a Tuner shortcut). Firmware does not read PWR yet:
-  poll AXP2101 IRQ status (PKEY short/long bits) while awake; verify on the device first.
+## Power button (owner 2026-11-15, built): click = screen on/off, hold 6 s = device off/on. No Tuner shortcut.
+- AXP2101: 0x27 OFFLEVEL=6 s, 0x22 bit1 long-press power-off (not restart), 0x41 bits 2/3 latch long/short press,
+  status 0x49 bit3 = click (write-1-to-clear). Polled every 200 ms (pwr_task in buttons.c). Shell: `pmu`.
+- Read back OK (r22=02 r27=14 r41=fc). Live click test with the owner pending. In deep sleep a power click does not
+  wake the watch (no PMU IRQ line known to the ESP32); the BOOT button / wrist motion do.
 
 ## PROBLEM: /flash file system leaked ~6.8 MB (fs_free=0, files 13.8 MB of 20.6 MB, one garbled dir entry)
 - Cause: likely writes cut by the many reboots/flashes on 11-15 (a meeting recording M_20261115_091121.wav 13.5 MB was being written).

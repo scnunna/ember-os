@@ -10,6 +10,8 @@ void hw_init(void);
 // ---- power (AXP2101) ----
 typedef struct { int pct; int mv; bool present; bool charging; bool vbus; } batt_t;
 void hw_batt(batt_t *b);
+int  hw_pwrkey_short(void);              // power button clicked since last call? 1/0, -1 = PMU not readable
+void hw_pmu_regs(uint8_t out[4]);        // 0x22 0x27 0x41 0x49 for the shell
 
 // ---- clock (PCF85063) - stores LOCAL time ----
 bool hw_rtc_get(struct tm *t);          // false if RTC unset/unreadable

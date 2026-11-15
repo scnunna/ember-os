@@ -1,7 +1,9 @@
 // BOOT button (GPIO0): short = back / screen off, double = start/stop a meeting recording, HOLD = talk to Amber while
 // held (release sends).
+// POWER button (AXP2101 PWRON): click = screen on/off (polled every 200 ms), hold 6 s = device off/on (the PMU does it).
 // Interrupt-driven: the task sleeps forever until the button goes down, polls at 10 ms only while a press or a
 // double-click window is in progress, then sleeps again. The same pin wakes the chip from light sleep.
+#include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
@@ -47,8 +49,18 @@ static void btn_task(void *arg)
     }
 }
 
+#include "hw.h"
+static void pwr_task(void *arg)
+{
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(200));
+        if (hw_pwrkey_short() == 1) { printf("BTN power click\n"); launcher_btn_long(); }   // screen on/off
+    }
+}
+
 void buttons_start(void)
 {
+    xTaskCreate(pwr_task, "pwrkey", 3072, NULL, 4, NULL);
     gpio_config_t io = {.pin_bit_mask = 1ULL << 0, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE};
     gpio_config(&io);
     xTaskCreate(btn_task, "btn", 4096, NULL, 4, &s_task);
