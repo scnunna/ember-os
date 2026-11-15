@@ -111,3 +111,7 @@ That makes 133 bytes per block, 256 samples, 16 ms at 16 kHz, so 62.5 blocks/s a
 
 ## Versioning
 `hello.fw` is the firmware version. New fields and new `t` values are always optional. Removing or redefining a field needs a v2 service UUID.
+
+## v1.4 (2026-11-15): Amber check-ins and voice
+New messages `sched`, `sched_ok`, `ci`, `ci_ack`, `ci_cfg`, `amber_heard`, `amber`, the `ptt` side `amber` (with optional
+`ctx`) and the `hello` fields `sd`/`ciq` are specified in `docs/LIFE_MANAGER_PLAN.md` (Part C). Firmware 1.2.

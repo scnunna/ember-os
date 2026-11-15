@@ -31,7 +31,7 @@ def ask(line, prefix, timeout=5):
 
 
 def check(ok, what, extra=''):
-    res.append(ok)
+    res.append(bool(ok))
     print(('PASS ' if ok else 'FAIL ') + what + (f'   [{extra}]' if extra else ''))
 
 
@@ -52,7 +52,7 @@ for _ in range(10):                      # the watch may still be booting (e.g. 
     if r: break
 scripts = r.split(':', 1)[1].split() if r and ':' in r else []
 check(len(scripts) >= 3, 'scripted apps found', r)
-BUILTIN = ['Steps', 'Recorder', 'Tuner', 'Metronome', 'Timer', 'Sound', 'Remote', 'Phone', 'Settings', 'Notes', 'Translate', 'Practice']
+BUILTIN = ['Steps', 'Recorder', 'Tuner', 'Metronome', 'Timer', 'Sound', 'Remote', 'Phone', 'Settings', 'Notes', 'Translate', 'Practice', 'Amber', 'Today']
 apps = BUILTIN + scripts
 up0, wall0 = uptime(), time.time()
 

@@ -12,7 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
-enum class Screen { HOME, NOTIFS, STEPS, APPS, NOTES, NOTE, TRANSLATE, PRACTICE, SETTINGS, BENCH }
+enum class Screen { HOME, NOTIFS, STEPS, APPS, NOTES, NOTE, TRANSLATE, PRACTICE, SETTINGS, BENCH, AMBER }
 
 /** A page with a title bar and a back arrow. */
 @OptIn(ExperimentalMaterial3Api::class)

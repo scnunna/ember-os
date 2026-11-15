@@ -50,6 +50,7 @@ fun SettingsScreen(go: (Screen) -> Unit, onBack: () -> Unit) {
             Text(if (AppGraph.gateway.installed()) "Ember Gateway is installed." else Errors.GW_MISSING)
             Button(enabled = AppGraph.gateway.installed(), onClick = { AppGraph.gateway.openApprovals(ctx) }) { Text("Open Ember Gateway (approve / log)") }
         }
+        LifeOsCard()
         InfoCard("Recordings (privacy)") {
             Text("Raw audio of a meeting is the most sensitive thing here.")
             Row { RadioButton(selected = keepDays == 0, onClick = { keepDays = 0; AppGraph.prefs.keepAudioDays = 0 }); Text("Delete the recording after it is turned into text (recommended)", Modifier.padding(top = 12.dp)) }
@@ -120,5 +121,49 @@ fun BenchScreen(onBack: () -> Unit) {
             val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             cm.setPrimaryClip(ClipData.newPlainText("Ember bench", BenchReport.format(rows.toList())))
         }) { Text("Copy results") }
+    }
+}
+
+@Composable
+private fun LifeOsCard() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val status by AppGraph.lifeStatus.collectAsState()
+    val err by AppGraph.link.lifeError.collectAsState()
+    var ciOn by remember { mutableStateOf(AppGraph.prefs.ciOn) }
+    var snooze by remember { mutableIntStateOf(AppGraph.prefs.ciSnooze) }
+    LaunchedEffect(Unit) { AppGraph.refreshLifeStatus() }
+    fun pushCfg() { AppGraph.link.send(AppGraph.prefs.ciCfg()) }
+    InfoCard("Life OS link (watch check-ins)") {
+        Text("Amber checks in on the watch at the times set in Life OS and the answers go back to Life OS through Ember Gateway.")
+        Text(
+            when {
+                status == null -> "Checking..."
+                !status!!.gatewayInstalled -> Errors.GW_MISSING
+                status!!.configured -> "Life OS link: configured (${status!!.host})."
+                else -> "Life OS link: not configured. Open Ember Gateway and enter the address and token."
+            },
+        )
+        err?.let { Text("Last problem: " + when (it) {
+            "OFFLINE" -> "could not reach Life OS (it will retry)."
+            "NOT_CONFIGURED" -> "the link is not set up in Ember Gateway."
+            "HTTP_ERROR" -> "Life OS refused the request (check the token)."
+            else -> it
+        }, style = MaterialTheme.typography.bodySmall) }
+        Text("Waiting to send: ${AppGraph.link.pendingCheckins()} check-ins", style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(enabled = status?.gatewayInstalled == true, onClick = { AppGraph.gateway.openLifeOsSettings(ctx) }) { Text("Open Ember Gateway settings") }
+            OutlinedButton(onClick = { scope.launch { AppGraph.refreshLifeStatus() } }) { Text("Refresh") }
+        }
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Switch(checked = ciOn, onCheckedChange = { ciOn = it; AppGraph.prefs.ciOn = it; pushCfg() })
+            Spacer(Modifier.width(8.dp)); Text("Check-ins on the watch")
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Text("Snooze")
+            listOf(5, 15, 30, 60).forEach { v ->
+                FilterChip(selected = snooze == v, onClick = { snooze = v; AppGraph.prefs.ciSnooze = v; pushCfg() }, label = { Text("$v min") })
+            }
+        }
     }
 }

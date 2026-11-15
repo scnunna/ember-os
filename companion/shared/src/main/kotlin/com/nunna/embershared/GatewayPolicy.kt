@@ -2,7 +2,7 @@ package com.nunna.embershared
 
 import java.net.URI
 
-enum class RequestKind { WATCH_FETCH, MODEL, HTTP }
+enum class RequestKind { WATCH_FETCH, MODEL, HTTP, LIFEOS }
 
 /** What a client asks the gateway to do. [declaredSize] and [payload] are shown to the user exactly as given. */
 data class GatewayRequest(
@@ -74,7 +74,12 @@ object GatewayPolicy {
         }
     }.getOrDefault(false)
 
-    fun classify(r: GatewayRequest): Decision = when (r.kind) {
+    /** [lifeOsBase] is the configured, validated Life OS base URL (or null when not configured). */
+    fun classify(r: GatewayRequest, lifeOsBase: String? = null): Decision = when (r.kind) {
+        RequestKind.LIFEOS ->
+            if (lifeOsBase == null) Decision.Deny(Contract.NOT_CONFIGURED, "The Life OS link is not set up in Ember Gateway.")
+            else if (LifeOsPolicy.isAllowed(r.method, r.url, lifeOsBase)) Decision.Auto("Life OS check-in sync (your tailnet only)")
+            else Decision.Deny(Contract.NOT_ALLOWED, "Only GET /api/watch/today and POST /api/watch/checkins on your Life OS host are allowed.")
         RequestKind.WATCH_FETCH ->
             if (r.method == "GET" && isWatchUrl(r.url)) Decision.Auto("Download from your watch (its own Wi-Fi, with its one-time key)")
             else Decision.Deny(Contract.NOT_ALLOWED, "Only GET requests to the watch Wi-Fi are automatic.")

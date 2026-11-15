@@ -13,6 +13,10 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.os.ParcelFileDescriptor
+import com.nunna.embercompanion.link.AmberApi
+import com.nunna.embercompanion.link.LifeOsApi
+import com.nunna.embercompanion.link.LifeOsResult
+import com.nunna.embercompanion.link.LifeOsStatus
 import com.nunna.embershared.Contract
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
@@ -20,7 +24,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.InputStream
 import java.util.UUID
 
-data class GatewayResult(val ok: Boolean, val code: String, val message: String, val uri: Uri?, val bytes: Long) {
+data class GatewayResult(val ok: Boolean, val code: String, val message: String, val uri: Uri?, val bytes: Long, val extra: Bundle? = null) {
     /** Plain sentence for the user, with a code. */
     fun userMessage(): String = when (code) {
         Contract.OK -> ""
@@ -49,7 +53,7 @@ interface GatewayApi {
  * Talks to Ember Gateway over a bound service (Messenger). This app has no internet permission, so every download
  * goes through the Gateway; the signature permission means only apps signed with the same key can do this.
  */
-class GatewayClient(private val ctx: Context) : GatewayApi {
+class GatewayClient(private val ctx: Context) : GatewayApi, LifeOsApi, AmberApi {
     fun installed(): Boolean = runCatching { ctx.packageManager.getPackageInfo(Contract.GATEWAY_PACKAGE, 0); true }.getOrDefault(false)
 
     fun approvalsIntent(): Intent = Intent().setClassName(Contract.GATEWAY_PACKAGE, Contract.APPROVALS_ACTIVITY).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -66,7 +70,7 @@ class GatewayClient(private val ctx: Context) : GatewayApi {
                 Contract.MSG_NEEDS_APPROVAL -> onNeedsApproval()
                 Contract.MSG_RESULT -> done.complete(
                     GatewayResult(b.getBoolean(Contract.K_OK), b.getString(Contract.K_CODE) ?: Contract.IO_ERROR, b.getString(Contract.K_MESSAGE) ?: "",
-                        b.getString(Contract.K_URI)?.takeIf { it.isNotEmpty() }?.let { Uri.parse(it) }, b.getLong(Contract.K_BYTES)),
+                        b.getString(Contract.K_URI)?.takeIf { it.isNotEmpty() }?.let { Uri.parse(it) }, b.getLong(Contract.K_BYTES), Bundle(b)),
                 )
             }
             true
@@ -104,6 +108,47 @@ class GatewayClient(private val ctx: Context) : GatewayApi {
             putString(Contract.K_URL, url); putLong(Contract.K_SIZE, expectedSize); putString(Contract.K_LABEL, label)
             if (sha256 != null) putString(Contract.K_SHA256, sha256)
         }, onProgress, onNeedsApproval)
+
+    private fun lifeResult(r: GatewayResult): LifeOsResult {
+        val b = r.extra
+        return LifeOsResult(r.ok, r.code, b?.getInt(Contract.K_STATUS) ?: 0, b?.getString(Contract.K_BODY) ?: "", b?.getLong(Contract.K_UPTO, -1L) ?: -1L, r.message)
+    }
+
+    private fun lifeFail(r: GatewayResult) = when (r.code) { "MISSING", "SECURITY" -> LifeOsResult(false, Contract.NOT_CONFIGURED, message = r.code); else -> lifeResult(r) }
+
+    override suspend fun today(dateIso: String, tzMinutes: Int): LifeOsResult {
+        val r = call(Contract.MSG_LIFEOS_TODAY, Bundle().apply { putString(Contract.K_DATE, dateIso); putInt(Contract.K_TZ, tzMinutes) }, {}, {})
+        return if (r.ok) lifeResult(r) else lifeFail(r)
+    }
+
+    override suspend fun checkins(bodyJson: String): LifeOsResult {
+        val r = call(Contract.MSG_LIFEOS_CHECKINS, Bundle().apply { putString(Contract.K_BODY, bodyJson) }, {}, {})
+        return if (r.ok) lifeResult(r) else lifeFail(r)
+    }
+
+    override suspend fun send(bodyJson: String): LifeOsResult {
+        val r = call(Contract.MSG_LIFEOS_AMBER, Bundle().apply { putString(Contract.K_BODY, bodyJson) }, {}, {})
+        return if (r.ok) lifeResult(r) else lifeFail(r)
+    }
+
+    override suspend fun inbox(): LifeOsResult {
+        val r = call(Contract.MSG_LIFEOS_INBOX, Bundle(), {}, {})
+        return if (r.ok) lifeResult(r) else lifeFail(r)
+    }
+
+    override suspend fun inboxAck(bodyJson: String): LifeOsResult {
+        val r = call(Contract.MSG_LIFEOS_INBOX_ACK, Bundle().apply { putString(Contract.K_BODY, bodyJson) }, {}, {})
+        return if (r.ok) lifeResult(r) else lifeFail(r)
+    }
+
+    override suspend fun status(): LifeOsStatus {
+        if (!installed()) return LifeOsStatus(false, false)
+        val r = call(Contract.MSG_LIFEOS_STATUS, Bundle(), {}, {})
+        return LifeOsStatus(true, r.ok && r.extra?.getBoolean(Contract.K_CONFIGURED) == true, r.extra?.getString(Contract.K_HOST) ?: "")
+    }
+
+    /** Opens Ember Gateway on its Life OS tab. */
+    fun openLifeOsSettings(ctx: Context) { runCatching { ctx.startActivity(approvalsIntent().putExtra("tab", 2)) } }
 
     override fun open(uri: Uri): InputStream? = runCatching {
         ParcelFileDescriptor.AutoCloseInputStream(ctx.contentResolver.openFileDescriptor(uri, "r"))

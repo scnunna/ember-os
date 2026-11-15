@@ -91,6 +91,15 @@ class Prefs(ctx: Context) {
         get() = sp.getString("llm", null)
         set(v) { sp.edit().putString("llm", v).apply() }
 
+    /** Watch check-in settings (ci_cfg): on, snooze 5..60 min. */
+    var ciOn: Boolean
+        get() = sp.getBoolean("ci_on", true)
+        set(v) { sp.edit().putBoolean("ci_on", v).apply() }
+    var ciSnooze: Int
+        get() = sp.getInt("ci_snooze", 15)
+        set(v) { sp.edit().putInt("ci_snooze", v.coerceIn(5, 60)).apply() }
+    fun ciCfg() = Message.CiCfg(ciOn, ciSnooze)
+
     var lastRecs: String
         get() = sp.getString("recs", "") ?: ""
         set(v) { sp.edit().putString("recs", v).apply() }
@@ -135,6 +144,28 @@ class PracticeStore(ctx: Context) {
             Message.PracticeSession(o.getInt("d"), o.getString("st"), o.getInt("m"), o.getString("t"), o.getInt("b"), o.getInt("c"))
         }
     }.getOrDefault(emptyList())
+}
+
+/** The watch check-in log + upload queue (S7: encrypted with the Keystore key, like every other store). */
+class CheckinPersistence(ctx: Context) {
+    private val sp = ctx.getSharedPreferences("checkins", Context.MODE_PRIVATE)
+
+    fun load(): List<com.nunna.embercompanion.link.Checkin> = runCatching {
+        val a = JSONArray(sp.getString("enc", null)?.let { AppCrypto.openFromString(it, "checkins") } ?: "[]")
+        (0 until a.length()).map {
+            val o = a.getJSONObject(it)
+            com.nunna.embercompanion.link.Checkin(
+                o.getLong("q"), o.getInt("d"), o.getInt("sl"), o.getLong("a"), o.getString("n"),
+                o.optJSONArray("i")?.let { ia -> (0 until ia.length()).map { j -> ia.getString(j) } } ?: emptyList(), o.optBoolean("s", false),
+            )
+        }
+    }.getOrDefault(emptyList())
+
+    /** Synchronous (commit) on purpose: the watch is only told "got it" after this returned. */
+    fun save(l: List<com.nunna.embercompanion.link.Checkin>) {
+        val json = JSONArray().also { a -> l.forEach { a.put(JSONObject().put("q", it.seq).put("d", it.date).put("sl", it.slot).put("a", it.at).put("n", it.ans).put("i", JSONArray(it.ids)).put("s", it.sent)) } }.toString()
+        if (!sp.edit().putString("enc", AppCrypto.sealToString(json, "checkins")).commit()) throw java.io.IOException("could not save check-ins")
+    }
 }
 
 /** Meeting notes as one JSON file each in the app's private folder. Nothing leaves the phone. */

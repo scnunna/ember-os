@@ -6,12 +6,18 @@
 #include "ble.h"
 #include "wifi.h"
 #include "link.h"
+#include "sched.h"
 
 #define STEP_GOAL 8000
 
-static lv_obj_t *s_ind, *s_bell, *s_time, *s_date, *s_arc, *s_steps, *s_batt, *s_rec, *s_hint, *s_store, *s_wx;
+static lv_obj_t *s_now, *s_ind, *s_bell, *s_time, *s_date, *s_arc, *s_steps, *s_batt, *s_rec, *s_hint, *s_store, *s_wx;
 static uint32_t s_last_clock, s_last_batt;
 static batt_t s_b;
+
+static void amber_cb(lv_event_t *e)
+{
+    for (int i = 0; i < APP_COUNT; i++) if (!strcmp(APPS[i].name, "Amber")) { launcher_open(i); return; }
+}
 
 void face_create(lv_obj_t *scr)
 {
@@ -51,6 +57,13 @@ void face_create(lv_obj_t *scr)
     lv_obj_align(s_store, LV_ALIGN_BOTTOM_RIGHT, -28, -62);
     s_rec = ui_label(scr, &lv_font_montserrat_20, C_WARN, "");
     lv_obj_align(s_rec, LV_ALIGN_BOTTOM_MID, 0, -112);
+    s_now = ui_label(scr, &lv_font_montserrat_14, 0xFFC857, "");       // "Now: X until 11:00" from the Life OS plan
+    lv_obj_set_width(s_now, 300);
+    lv_label_set_long_mode(s_now, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_align(s_now, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_now, LV_ALIGN_BOTTOM_MID, 0, -92);
+    lv_obj_t *am = ui_btn(scr, LV_SYMBOL_AUDIO, 64, 64, 0x7A4A12, amber_cb, NULL);   // Amber shortcut
+    lv_obj_align(am, LV_ALIGN_LEFT_MID, 12, 22);
     s_hint = ui_label(scr, &lv_font_montserrat_14, 0x555555, LV_SYMBOL_UP "  swipe up for apps");
     lv_obj_align(s_hint, LV_ALIGN_BOTTOM_MID, 0, -20);
 }
@@ -86,6 +99,9 @@ void face_tick(void)
         lv_label_set_text(s_ind, ind);
         lv_obj_align(s_ind, LV_ALIGN_TOP_RIGHT, -16, 10);
         int un = ble_notif_unread() + link_notif_unread();
+        char nw[96];
+        sched_now_text(nw, sizeof(nw));
+        lv_label_set_text(s_now, nw);
         char wx[40];
         lv_label_set_text(s_wx, link_weather(wx, sizeof(wx)) ? wx : "");
         if (un > 0) { snprintf(b, sizeof(b), LV_SYMBOL_BELL " %d", un); lv_label_set_text(s_bell, b); } else lv_label_set_text(s_bell, "");

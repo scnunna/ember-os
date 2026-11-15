@@ -22,6 +22,7 @@
 #include "driver/rtc_io.h"
 #include "bsp/esp-bsp.h"
 #include "app.h"
+#include "sched.h"
 #include "hw.h"
 #include "ble.h"
 #include "wifi.h"
@@ -223,7 +224,7 @@ static void power_task(void *a)
         int deep_min = hw_pref_get("deep", 30);   // 0 = never
         if (deep_min > 0 && power_sleep_allowed() && !ble_connected() && hw_imu_still_ms() > (uint32_t)deep_min * 60000 &&
             now - s_doze_since > (int64_t)deep_min * 60000)
-            power_deep_sleep(0);
+            power_deep_sleep(sched_next_s());     // wake for the next Amber check-in
     }
 }
 void power_start(void) { xTaskCreate(power_task, "power", 4096, NULL, 2, NULL); }

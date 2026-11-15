@@ -38,7 +38,15 @@ bool link_weather(char *out, size_t n); // "-2°C  Snow" ; false if none / older
 
 // ---- translation ----
 bool link_ptt_start(bool me);           // starts mic -> ADPCM -> AUDIO stream (false if not connected / mic busy)
+bool link_ptt_start_ex(const char *side, const char *ctx_json);   // side "me" / "them" / "amber"; ctx = JSON object or NULL
 void link_ptt_stop(void);
+
+// ---- Amber (personal agent): what the phone heard + replies ----
+#define LINK_AMBER_MAX 10
+typedef struct { char text[304]; bool mine; } link_amber_t;          // mine = "You said"
+int  link_amber_count(void);
+bool link_amber_get(int i, link_amber_t *out);    // 0 = newest
+int  link_amber_gen(void);                         // changes on every new line
 bool link_ptt_active(void);
 void link_tr_state(char *me, char *them, char *src, size_t srcn, char *dst, size_t dstn, int *gen);   // gen increments per new result
 

@@ -24,9 +24,10 @@
 #include "adpcm.h"
 #include "practice.h"
 #include "devices.h"
+#include "sched.h"
 
 static const char *TAG = "link";
-#define FW_VERSION "1.1"
+#define FW_VERSION "1.2"
 #define MAX_MSG 4096
 
 // eb3f00NN-6d62-4f53-8a1e-656d6265720a, little-endian for NimBLE
@@ -271,7 +272,21 @@ static void send_hello(void)
     cJSON_AddStringToObject(o, "t", "hello"); cJSON_AddStringToObject(o, "fw", FW_VERSION); cJSON_AddStringToObject(o, "name", ble_name());
     cJSON_AddNumberToObject(o, "batt", b.present ? b.pct : -1); cJSON_AddNumberToObject(o, "mv", b.mv);
     cJSON_AddBoolToObject(o, "usb", b.vbus); cJSON_AddNumberToObject(o, "steps", hw_steps_today());
+    cJSON_AddNumberToObject(o, "sd", sched_date()); cJSON_AddNumberToObject(o, "ciq", sched_queued());
     send_obj(o);
+}
+
+// queued check-in answers -> phone (re-sent until "ci_ack"); any task
+static int64_t s_last_ci_flush;
+static void flush_ci(void)
+{
+    s_last_ci_flush = esp_timer_get_time();
+    if (!link_ready()) return;
+    cJSON *arr = cJSON_CreateArray();
+    sched_pending(arr, 12);                     // the TX queue holds 16; the rest goes after the next ack
+    cJSON *it;
+    while ((it = cJSON_DetachItemFromArray(arr, 0)) != NULL) send_obj(it);
+    cJSON_Delete(arr);
 }
 static void send_recs(void)
 {
@@ -334,7 +349,8 @@ void link_tr_state(char *me, char *them, char *src, size_t srcn, char *dst, size
 
 // ------------------------------------------------------------------ push-to-talk audio (mic -> ADPCM -> AUDIO)
 static volatile bool s_ptt, s_ptt_task;
-static bool s_ptt_me;
+static char s_ptt_side[8] = "me";
+static char s_ptt_ctx[128];
 bool link_ptt_active(void) { return s_ptt; }
 static void ptt_task(void *a)
 {
@@ -359,26 +375,29 @@ static void ptt_task(void *a)
     hw_mic_close();
     s_ptt = false;
     cJSON *o = cJSON_CreateObject();
-    cJSON_AddStringToObject(o, "t", "ptt"); cJSON_AddStringToObject(o, "side", s_ptt_me ? "me" : "them"); cJSON_AddBoolToObject(o, "on", false);
+    cJSON_AddStringToObject(o, "t", "ptt"); cJSON_AddStringToObject(o, "side", s_ptt_side); cJSON_AddBoolToObject(o, "on", false);
     cJSON_AddNumberToObject(o, "blocks", seq_total);          // how many AUDIO blocks were sent (phone: wait until seen)
     send_obj(o);
     s_ptt_task = false;
     vTaskDelete(NULL);
 }
-bool link_ptt_start(bool me)
+bool link_ptt_start_ex(const char *side, const char *ctx_json)
 {
     if (s_ptt || s_ptt_task || !link_ready()) return false;
     if (ble_att_mtu(s_conn) < ADPCM_BLOCK_BYTES + 3) { ESP_LOGW(TAG, "MTU %d too small for audio", ble_att_mtu(s_conn)); return false; }
     if (!hw_mic_open(16000, 30.0f)) return false;
-    s_ptt_me = me;
+    snprintf(s_ptt_side, sizeof(s_ptt_side), "%s", side);
+    snprintf(s_ptt_ctx, sizeof(s_ptt_ctx), "%s", ctx_json ? ctx_json : "");
     cJSON *o = cJSON_CreateObject();
-    cJSON_AddStringToObject(o, "t", "ptt"); cJSON_AddStringToObject(o, "side", me ? "me" : "them"); cJSON_AddBoolToObject(o, "on", true);
+    cJSON_AddStringToObject(o, "t", "ptt"); cJSON_AddStringToObject(o, "side", s_ptt_side); cJSON_AddBoolToObject(o, "on", true);
     cJSON_AddNumberToObject(o, "rate", 16000); cJSON_AddStringToObject(o, "codec", "ima-adpcm");
+    if (s_ptt_ctx[0]) { cJSON *c = cJSON_Parse(s_ptt_ctx); if (c) cJSON_AddItemToObject(o, "ctx", c); }
     send_obj(o);
     s_ptt = true; s_ptt_task = true;
     xTaskCreate(ptt_task, "ptt", 4096, NULL, 5, NULL);
     return true;
 }
+bool link_ptt_start(bool me) { return link_ptt_start_ex(me ? "me" : "them", NULL); }
 void link_ptt_stop(void) { s_ptt = false; }
 
 int link_adpcm_selftest(char *hex, size_t n)
@@ -396,6 +415,30 @@ int link_adpcm_selftest(char *hex, size_t n)
     for (int i = 0; i < ADPCM_BLOCK_BYTES && o + 3 < n; i++) o += snprintf(hex + o, n - o, "%02x", b2[i]);
     hex[o < n ? o : n - 1] = 0;
     return 0;
+}
+
+// ------------------------------------------------------------------ Amber conversation (newest first, in PSRAM)
+EXT_RAM_BSS_ATTR static link_amber_t s_amb[LINK_AMBER_MAX];
+static int s_amb_n, s_amb_gen;
+static void amber_push(const char *text, bool mine)
+{
+    xSemaphoreTake(s_nlock, portMAX_DELAY);
+    memmove(&s_amb[1], &s_amb[0], sizeof(link_amber_t) * (LINK_AMBER_MAX - 1));
+    snprintf(s_amb[0].text, sizeof(s_amb[0].text), "%s", text);
+    s_amb[0].mine = mine;
+    if (s_amb_n < LINK_AMBER_MAX) s_amb_n++;
+    s_amb_gen++;
+    xSemaphoreGive(s_nlock);
+}
+int link_amber_count(void) { return s_amb_n; }
+int link_amber_gen(void) { return s_amb_gen; }
+bool link_amber_get(int i, link_amber_t *out)
+{
+    if (i < 0 || i >= s_amb_n) return false;
+    xSemaphoreTake(s_nlock, portMAX_DELAY);
+    *out = s_amb[i];
+    xSemaphoreGive(s_nlock);
+    return true;
 }
 
 // ------------------------------------------------------------------ message handling (link task)
@@ -436,7 +479,9 @@ static void handle(const char *json, bool trusted)
     if (!strcmp(t, "time")) {
         const cJSON *ep = cJSON_GetObjectItemCaseSensitive(m, "epoch");
         if (cJSON_IsNumber(ep)) {
-            time_t e = (time_t)ep->valuedouble + get_int(m, "tz", 0);
+            int tz = get_int(m, "tz", 0);
+            if (tz >= -14 * 3600 && tz <= 14 * 3600 && hw_pref_get("tz", 0) != tz) hw_pref_set("tz", tz);   // check-in times are sent as UTC
+            time_t e = (time_t)ep->valuedouble + tz;
             struct tm tm; gmtime_r(&e, &tm);
             hw_rtc_set(&tm);
         }
@@ -514,7 +559,30 @@ static void handle(const char *json, bool trusted)
         if (!allowed(trusted, q)) goto done;
         script_remove(nm);
         send_apps();
-    } else if (!strcmp(t, "find_watch")) {
+    } else if (!strcmp(t, "sched")) {
+        char er[32];
+        if (sched_set(m, er, sizeof(er))) {
+            cJSON *o = cJSON_CreateObject();
+            cJSON_AddStringToObject(o, "t", "sched_ok"); cJSON_AddNumberToObject(o, "date", sched_date());
+            cJSON_AddStringToObject(o, "gen", sched_gen()); cJSON_AddNumberToObject(o, "n", sched_count());
+            send_obj(o);
+        } else send_simple("err", "msg", er);
+    } else if (!strcmp(t, "ci_ack")) {
+        const cJSON *u = cJSON_GetObjectItemCaseSensitive(m, "upto");
+        if (cJSON_IsNumber(u) && u->valuedouble >= 0) { sched_ack((uint32_t)u->valuedouble); if (sched_queued()) flush_ci(); }
+    } else if (!strcmp(t, "ci_cfg")) sched_cfg(m);
+    else if (!strcmp(t, "amber_heard") || !strcmp(t, "amber")) {
+        char tx[304]; copy_str(tx, sizeof(tx), m, "text");
+        if (tx[0]) {
+            bool heard = !strcmp(t, "amber_heard");
+            amber_push(tx, heard);
+            if (!heard && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(m, "final"))) {
+                char toast[80]; snprintf(toast, sizeof(toast), "Amber: %.66s", tx);
+                wake_toast(toast, 1);
+            }
+        }
+    }
+    else if (!strcmp(t, "find_watch")) {
         wake_toast("Here I am!", 0);
         hw_buzz_pattern(3, 300, 200);
         for (int i = 0; i < 3; i++) hw_beep(1760, 180, 90);
@@ -550,8 +618,9 @@ static void link_task(void *a)
             // phone app is actually listening. Wait a moment so the hello isn't lost (the phone can also send hello_req).
             vTaskDelay(pdMS_TO_TICKS(1200));
             s_hello_due = false;
-            if (link_ready()) { send_hello(); link_send_steps(); last_steps = esp_timer_get_time(); }
+            if (link_ready()) { send_hello(); link_send_steps(); last_steps = esp_timer_get_time(); flush_ci(); }
         }
+        if (link_ready() && sched_queued() && esp_timer_get_time() - s_last_ci_flush > 60LL * 1000000) flush_ci();
         if (link_ready() && esp_timer_get_time() - last_steps > 3600LL * 1000000) { last_steps = esp_timer_get_time(); link_send_steps(); }
     }
 }
@@ -562,5 +631,6 @@ void link_start(void)
     s_txq = xQueueCreate(16, sizeof(char *));
     s_nlock = xSemaphoreCreateMutex();
     xTaskCreate(link_task, "link", 4096, NULL, 3, NULL);
+    sched_start(flush_ci);
     xTaskCreate(tx_task, "link_tx", 3072, NULL, 4, NULL);
 }

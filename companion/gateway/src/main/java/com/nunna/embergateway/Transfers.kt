@@ -136,4 +136,30 @@ object Transfers {
         if (code >= 400) throw TransferException(Contract.HTTP_ERROR, "Server answered $code")
         n
     }
+
+    /**
+     * One Life OS call. Authorization header carries the device token (never logged). Redirects are not followed
+     * and any 3xx counts as an error. Returns (HTTP status, response text, at most 256 KB).
+     */
+    suspend fun lifeOs(method: String, url: String, token: String, body: String?): Pair<Int, String> = withContext(Dispatchers.IO) {
+        val c = URL(url).openConnection() as HttpURLConnection
+        try {
+            c.instanceFollowRedirects = false
+            c.requestMethod = method
+            c.connectTimeout = 10_000; c.readTimeout = 20_000
+            c.setRequestProperty("Authorization", "Bearer $token")
+            c.setRequestProperty("Accept", "application/json")
+            if (body != null) {
+                c.doOutput = true
+                c.setRequestProperty("Content-Type", "application/json")
+                c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            }
+            val code = c.responseCode
+            val stream = if (code >= 400) c.errorStream else c.inputStream
+            val text = stream?.use { i -> val out = java.io.ByteArrayOutputStream(); val buf = ByteArray(8192)
+                while (out.size() < 256 * 1024) { val r = i.read(buf); if (r < 0) break; out.write(buf, 0, r) }
+                out.toString("UTF-8") } ?: ""
+            code to text
+        } finally { c.disconnect() }
+    }
 }

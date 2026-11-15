@@ -27,9 +27,23 @@ sealed interface Message {
     /** Ask the watch to delete a recording; it only does so if [s] matches the file size. */
     data class RecDel(val n: String, val s: Long) : Message
     data object PracticeReq : Message
+    /** v1.4: one block of the day's plan. [s]/[e] are minutes after local midnight. */
+    data class SchedBlock(val id: String, val s: Int, val e: Int, val title: String, val done: Boolean)
+    /** v1.4: replace the watch's plan for [date] (yyyymmdd). */
+    data class Sched(val date: Int, val gen: String, val slots: List<Int>, val blocks: List<SchedBlock>) : Message
+    /** v1.4: the watch may drop queued check-ins with seq <= [upto]. */
+    data class CiAck(val upto: Long) : Message
+    /** v1.4: check-in settings. [snooze] is 5..60 minutes. */
+    data class CiCfg(val on: Boolean, val snooze: Int) : Message
+    /** v1.4: what the phone understood from a hold-to-talk to Amber (max 300 characters). */
+    data class AmberHeard(val text: String) : Message
+    /** v1.4: Amber's reply (max 300 characters). [final] = the real answer (buzz); false = just "Got it." */
+    data class Amber(val id: String, val text: String, val final: Boolean) : Message
 
     // ---- watch -> phone (EVT) ----
-    data class Hello(val fw: String, val name: String, val batt: Int, val mv: Int, val usb: Boolean, val steps: Int) : Message
+    data class Hello(val fw: String, val name: String, val batt: Int, val mv: Int, val usb: Boolean, val steps: Int,
+        /** v1.4: yyyymmdd of the plan stored on the watch (0 = none) and how many check-ins are queued. */
+        val sd: Int = 0, val ciq: Int = 0) : Message
     data class StepDay(val date: Int, val steps: Int)
     data class Steps(val days: List<StepDay>) : Message
     data class Reply(val id: Int, val idx: Int) : Message
@@ -39,7 +53,8 @@ sealed interface Message {
     /** Either (ssid, pass, ip) or [err]. */
     data class Wifi(val ssid: String, val pass: String, val ip: String, val err: String?, val token: String = "") : Message
     /** [blocks] = number of AUDIO blocks sent (only meaningful on `off`), -1 if the watch did not say. */
-    data class Ptt(val side: String, val on: Boolean, val rate: Int, val codec: String, val blocks: Int = -1) : Message
+    data class PttCtx(val ciSeq: Long, val slot: Int, val date: Int)
+    data class Ptt(val side: String, val on: Boolean, val rate: Int, val codec: String, val blocks: Int = -1, val ctx: PttCtx? = null) : Message
     data class PracticeSession(val date: Int, val start: String, val min: Int, val tool: String, val bpmMax: Int, val changes: Int)
     data class Practice(val sessions: List<PracticeSession>) : Message
     data class FindPhone(val on: Boolean) : Message
@@ -48,6 +63,15 @@ sealed interface Message {
     data class AppOk(val name: String) : Message
     /** [re] = the `t` of the message that failed, if the watch says. */
     data class Err(val msg: String, val re: String = "") : Message
+
+    /**
+     * v1.4: one answer to a check-in slot. [seq] is a u32 kept by the watch; [date] yyyymmdd the slot belongs to; [slot]
+     * minutes after local midnight (1440 = end of day); [at] UTC epoch seconds; [ans] on|off|snooze|missed; [ids] the
+     * block ids planned in that window.
+     */
+    data class Ci(val seq: Long, val date: Int, val slot: Int, val at: Long, val ans: String, val ids: List<String>) : Message
+    /** v1.4: reply to [Sched]. */
+    data class SchedOk(val date: Int, val gen: String, val n: Int) : Message
 
     /** A `t` value we do not know. Ignored by receivers, kept for logging. */
     data class Unknown(val t: String) : Message
@@ -89,8 +113,25 @@ object MessageCodec {
         Message.FindWatch -> obj("find_watch")
         is Message.RecDel -> obj("rec_del") { put("n", m.n); put("s", m.s) }
         Message.PracticeReq -> obj("practice_req")
+        is Message.Sched -> obj("sched") {
+            put("date", m.date); put("gen", m.gen)
+            put("slots", JsonArray(m.slots.map { JsonPrimitive(it) }))
+            put("blocks", JsonArray(m.blocks.map { b ->
+                buildJsonObject { put("id", b.id); put("s", b.s); put("e", b.e); put("title", b.title); put("done", b.done) }
+            }))
+        }
+        is Message.CiAck -> obj("ci_ack") { put("upto", m.upto) }
+        is Message.CiCfg -> obj("ci_cfg") { put("on", m.on); put("snooze", m.snooze) }
+        is Message.AmberHeard -> obj("amber_heard") { put("text", m.text) }
+        is Message.Amber -> obj("amber") { put("id", m.id); put("text", m.text); put("final", m.final) }
+        is Message.Ci -> obj("ci") {
+            put("seq", m.seq); put("date", m.date); put("slot", m.slot); put("at", m.at); put("ans", m.ans)
+            put("ids", strs(m.ids))
+        }
+        is Message.SchedOk -> obj("sched_ok") { put("date", m.date); put("gen", m.gen); put("n", m.n) }
         is Message.Hello -> obj("hello") {
             put("fw", m.fw); put("name", m.name); put("batt", m.batt); put("mv", m.mv); put("usb", m.usb); put("steps", m.steps)
+            put("sd", m.sd); put("ciq", m.ciq)
         }
         is Message.Steps -> obj("steps") {
             put("days", JsonArray(m.days.map { buildJsonObject { put("date", it.date); put("steps", it.steps) } }))
@@ -105,7 +146,8 @@ object MessageCodec {
         is Message.Wifi -> obj("wifi") {
             if (m.err != null) put("err", m.err) else { put("ssid", m.ssid); put("pass", m.pass); put("ip", m.ip); if (m.token.isNotEmpty()) put("token", m.token) }
         }
-        is Message.Ptt -> obj("ptt") { put("side", m.side); put("on", m.on); put("rate", m.rate); put("codec", m.codec); if (m.blocks >= 0) put("blocks", m.blocks) }
+        is Message.Ptt -> obj("ptt") { put("side", m.side); put("on", m.on); put("rate", m.rate); put("codec", m.codec); if (m.blocks >= 0) put("blocks", m.blocks)
+            m.ctx?.let { c -> put("ctx", buildJsonObject { put("ci_seq", c.ciSeq); put("slot", c.slot); put("date", c.date) }) } }
         is Message.Practice -> obj("practice") {
             put("sessions", JsonArray(m.sessions.map { s ->
                 buildJsonObject {
@@ -149,7 +191,16 @@ object MessageCodec {
                 "find_watch" -> Message.FindWatch
                 "rec_del" -> Message.RecDel(o.str("n") ?: "", o.long("s"))
                 "practice_req" -> Message.PracticeReq
-                "hello" -> Message.Hello(o.str("fw") ?: "", o.str("name") ?: "", o.int("batt"), o.int("mv"), o.bool("usb"), o.int("steps"))
+                "hello" -> Message.Hello(o.str("fw") ?: "", o.str("name") ?: "", o.int("batt"), o.int("mv"), o.bool("usb"), o.int("steps"), o.int("sd"), o.int("ciq"))
+                "sched" -> Message.Sched(o.int("date"), o.str("gen") ?: "", (o["slots"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.intOrNull } ?: emptyList(), o.arr("blocks").map {
+                    Message.SchedBlock(it.str("id") ?: "", it.int("s"), it.int("e"), it.str("title") ?: "", it.bool("done"))
+                })
+                "ci_ack" -> Message.CiAck(o.long("upto"))
+                "ci_cfg" -> Message.CiCfg(o.bool("on"), o.int("snooze"))
+                "amber_heard" -> Message.AmberHeard(o.str("text") ?: "")
+                "amber" -> Message.Amber(o.str("id") ?: "", o.str("text") ?: "", o.bool("final"))
+                "ci" -> Message.Ci(o.long("seq"), o.int("date"), o.int("slot"), o.long("at"), o.str("ans") ?: "", o.strList("ids"))
+                "sched_ok" -> Message.SchedOk(o.int("date"), o.str("gen") ?: "", o.int("n"))
                 "steps" -> Message.Steps(o.arr("days").map { Message.StepDay(it.int("date"), it.int("steps")) })
                 "reply" -> Message.Reply(o.int("id"), o.int("idx"))
                 "dismiss" -> Message.Dismiss(o.int("id"))
@@ -157,7 +208,8 @@ object MessageCodec {
                     Message.RecFile(f.str("n") ?: "", f.long("s"), (f["marks"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.longOrNull } ?: emptyList())
                 })
                 "wifi" -> Message.Wifi(o.str("ssid") ?: "", o.str("pass") ?: "", o.str("ip") ?: "", o.str("err"), o.str("token") ?: "")
-                "ptt" -> Message.Ptt(o.str("side") ?: "me", o.bool("on"), if (o.containsKey("rate")) o.int("rate") else 16000, o.str("codec") ?: "ima-adpcm", if (o.containsKey("blocks")) o.int("blocks") else -1)
+                "ptt" -> Message.Ptt(o.str("side") ?: "me", o.bool("on"), if (o.containsKey("rate")) o.int("rate") else 16000, o.str("codec") ?: "ima-adpcm", if (o.containsKey("blocks")) o.int("blocks") else -1,
+                    (o["ctx"] as? JsonObject)?.let { c -> Message.PttCtx(c.long("ci_seq"), c.int("slot"), c.int("date")) })
                 "practice" -> Message.Practice(o.arr("sessions").map {
                     Message.PracticeSession(it.int("date"), it.str("start") ?: "", it.int("min"), it.str("tool") ?: "", it.int("bpm_max"), it.int("changes"))
                 })

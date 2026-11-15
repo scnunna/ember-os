@@ -12,6 +12,7 @@ Package `com.nunna.embercompanion`, minSdk 31, target/compile 36, Kotlin + Compo
 - **Meeting notes**: lists recordings on the watch. "Download and make notes" starts the watch hotspot, joins it, downloads the WAV, switches the hotspot off, turns speech into text with sherpa-onnx (Whisper tiny, downloaded once), then writes a summary and action items. A note shows the transcript with bookmark chips that jump to that spot, can be shared as text, and sent to the watch. Notes are JSON files in the app's private folder.
 - **Travel translate**: pick your language and theirs, download the two ML Kit language packs, then hold the button on the watch (or the "I speak" / "They speak" buttons on the phone). The speech is converted to text, translated, spoken aloud in the target language and sent to the watch.
 - **Guitar practice**: weekly minutes, streak, fastest-tempo trend, and a button that opens GuitarNoodle if it is installed.
+- **Amber** (Life OS link, Ember Link v1.4): the owner's personal agent. The watch sends fixed check-in answers (`ci`: slot, on/off/missed, planned block ids) and hold-to-talk audio (`ptt` side `amber`). The phone stores each `ci` in an encrypted queue first, then sends `ci_ack`, then forwards batches of 64 to Life OS (retry with backoff, keeps 500). Voice is transcribed on the phone (same Whisper path as Translate), shown to the watch as `amber_heard`, posted as text, and Amber's replies are polled (every 20 s for 3 minutes after a message, else every 5 minutes while connected) and sent to the watch as `amber`. The plan (`sched` with `slots`) is fetched after hello, every 15 minutes and after local midnight, and pushed when `gen` changed or the watch's stored date is not today. The Home "Today" card shows the Now/Next line and today's adherence; the Amber screen shows the conversation and a typed box; Settings shows the link status, an "Open Ember Gateway settings" button and check-in on/snooze. Everything goes through Ember Gateway (Life OS link tab: https base URL on `.ts.net` with optional port, plus `lw_` token, stored AES-GCM encrypted; only the five `/api/watch/*` routes to that host and port, no redirects). Spec: `../docs/LIFE_MANAGER_PLAN.md`.
 - **Settings**: speech model download/delete, optional AI summary model file, permission shortcuts.
 
 Also: the watch's "Find phone" rings the phone loudly (alarm volume) until the watch or you stop it; the watch Remote app sends play/pause, next, previous and volume to the phone's media session.
@@ -47,7 +48,7 @@ Needs JDK 17 and the Android SDK (`local.properties` points at `%LOCALAPPDATA%\A
 ```powershell
 cd "ESP32 Projects\Projects\AMOLED Watch 2.06\companion"
 .\gradlew.bat assembleDebug        # APK: app\build\outputs\apk\debug\app-debug.apk (about 100 MB, mostly ONNX Runtime)
-.\gradlew.bat testDebugUnitTest    # 35 JVM + Robolectric tests
+.\gradlew.bat testDebugUnitTest    # 81 :app + 19 :shared JVM/Robolectric tests
 ```
 Install on the phone: Gateway first, then Companion (`adb install -r gateway-debug.apk`, then `adb install -r app-debug.apk`). The project now builds with Kotlin 2.4.0 because LiteRT-LM needs it.
 
@@ -56,6 +57,7 @@ Framing and ADPCM against `docs/link_vectors.json` (bit-exact), round trip of ev
 
 ## NOT tested on a real phone or watch (be honest)
 Nothing in this app has run on a device yet (no phone, no emulator was available). Specifically unverified:
+- Life OS / Amber: the Gateway Life OS link screen and its five calls against the real Life OS server (HTTPS over the tailnet, bearer token, port 8410), the IPC for the new message codes, the Companion plan sync / `sched` / `ci` / `ci_ack` / `amber*` exchange with the real watch firmware (both sides were built in parallel from the contract), Whisper transcription of the Amber voice clips, the Home Today card and Amber screen, and the polling schedule on a real foreground service. The Amber conversation on the phone is kept in memory only (lost when the app restarts); a reply is only fetched while the watch is connected.
 - Passkey bonding with the real firmware (createBond path, bond-lost handling, no sends before bonded), Gateway Messenger/ContentProvider IPC and the signature permission across the two APKs, Gateway Wi-Fi join and 403 handling, the approval screens, the Keystore encryption on a real device (tests use a plain AES key because Robolectric has no Keystore), LiteRT-LM on CPU and GPU, Gemma translation quality, and the bench numbers.
 - Companion Device Manager pairing and the chooser result handling, the GATT connection, MTU 247 / 2M PHY, notification subscribe order, write queue, reconnect backoff, foreground service and boot restart.
 - The watch firmware side of every message (the firmware was built in parallel).

@@ -6,8 +6,10 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "bsp/esp-bsp.h"
 #include "app.h"
 #include "hw.h"
+#include "link.h"
 
 static volatile int s_pk_req = -2;           // -2 nothing pending, -1 hide, >= 0 show this code
 static lv_obj_t *s_pk_box;
@@ -15,6 +17,12 @@ static SemaphoreHandle_t s_cf_done;
 static volatile bool s_cf_req, s_cf_cancel, s_cf_result;
 static char s_cf_text[160];
 static lv_obj_t *s_cf_box;
+// check-in prompt (sched.c): 0 on track, 1 off track, 2 snooze
+static SemaphoreHandle_t s_ci_done;
+static volatile bool s_ci_req, s_ci_cancel;
+static volatile int s_ci_result;
+static char s_ci_head[48], s_ci_body[200], s_ci_ctx[96];
+static lv_obj_t *s_ci_box, *s_ci_status;
 
 void ui_passkey(int code) { s_pk_req = code < 0 ? -1 : code; }
 
@@ -39,8 +47,87 @@ static void cf_answer(bool yes)
 static void allow_cb(lv_event_t *e) { cf_answer(true); }
 static void deny_cb(lv_event_t *e) { cf_answer(false); }
 
+static void ci_answer(int r)
+{
+    if (link_ptt_active()) link_ptt_stop();
+    s_ci_result = r;
+    if (s_ci_box) { lv_obj_delete(s_ci_box); s_ci_box = NULL; s_ci_status = NULL; }
+    xSemaphoreGive(s_ci_done);
+}
+static void ci_on_cb(lv_event_t *e) { ci_answer(0); }
+static void ci_snooze_cb(lv_event_t *e) { ci_answer(2); }
+static void ci_skip_cb(lv_event_t *e) { ci_answer(1); }
+
+// "Hold to tell Amber": audio streams to the phone while the finger is down (same path as Translate)
+static void ci_talk_ev(lv_event_t *e)
+{
+    lv_event_code_t c = lv_event_get_code(e);
+    if (c == LV_EVENT_PRESSED) {
+        if (link_ptt_start_ex("amber", s_ci_ctx)) { hw_buzz(25); if (s_ci_status) lv_label_set_text(s_ci_status, LV_SYMBOL_AUDIO "  listening... release to send"); }
+        else if (s_ci_status) lv_label_set_text(s_ci_status, "Phone not connected - tap a button");
+    } else if ((c == LV_EVENT_RELEASED || c == LV_EVENT_PRESS_LOST) && link_ptt_active()) {
+        link_ptt_stop(); hw_buzz(20);
+        if (s_ci_status) lv_label_set_text(s_ci_status, LV_SYMBOL_OK "  sent to Amber");
+    }
+}
+static lv_obj_t *talk_btn(lv_obj_t *p, int y)
+{
+    lv_obj_t *t = ui_btn(p, LV_SYMBOL_AUDIO "  Hold: tell Amber", 330, 68, 0x7A4A12, NULL, NULL);
+    lv_obj_align(t, LV_ALIGN_TOP_MID, 0, y);
+    lv_obj_add_event_cb(t, ci_talk_ev, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(t, ci_talk_ev, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(t, ci_talk_ev, LV_EVENT_PRESS_LOST, NULL);
+    return t;
+}
+static void ci_off_cb(lv_event_t *e)             // off track -> ask what happened instead (voice), or skip
+{
+    lv_obj_clean(s_ci_box);
+    lv_obj_t *h = ui_label(s_ci_box, &lv_font_montserrat_28, C_TEXT, "What did you do\ninstead?");
+    lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 80);
+    s_ci_status = ui_label(s_ci_box, &lv_font_montserrat_20, C_DIM, "Amber will update your plan.");
+    lv_obj_align(s_ci_status, LV_ALIGN_TOP_MID, 0, 190);
+    talk_btn(s_ci_box, 250);
+    lv_obj_t *d = ui_btn(s_ci_box, "Done", 200, 70, 0x3A3A3A, ci_skip_cb, NULL);
+    lv_obj_align(d, LV_ALIGN_TOP_MID, 0, 350);
+}
+
+static void ci_show(void)
+{
+    s_ci_box = panel();
+    lv_obj_t *h = ui_label(s_ci_box, &lv_font_montserrat_20, C_ACCENT, s_ci_head);
+    lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_t *q = ui_label(s_ci_box, &lv_font_montserrat_20, C_TEXT, s_ci_body);
+    lv_obj_set_width(q, 350);
+    lv_label_set_long_mode(q, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_height(q, 120);
+    lv_obj_align(q, LV_ALIGN_TOP_MID, 0, 66);
+    s_ci_status = ui_label(s_ci_box, &lv_font_montserrat_14, C_DIM, "Kept up?");
+    lv_obj_align(s_ci_status, LV_ALIGN_TOP_MID, 0, 192);
+    lv_obj_t *on = ui_btn(s_ci_box, LV_SYMBOL_OK "  On track", 330, 70, 0x1F7A4D, ci_on_cb, NULL);
+    lv_obj_align(on, LV_ALIGN_TOP_MID, 0, 216);
+    lv_obj_t *off = ui_btn(s_ci_box, "Off track", 160, 66, 0x5A1E1E, ci_off_cb, NULL);
+    lv_obj_align(off, LV_ALIGN_TOP_LEFT, 40, 298);
+    lv_obj_t *sn = ui_btn(s_ci_box, "Snooze", 160, 66, 0x3A3A3A, ci_snooze_cb, NULL);
+    lv_obj_align(sn, LV_ALIGN_TOP_RIGHT, -40, 298);
+    talk_btn(s_ci_box, 376);
+    hw_buzz_pattern(2, 90, 120);
+}
+
 static void tick(lv_timer_t *t)
 {
+    if (s_ci_req) {
+        s_ci_req = false;
+        launcher_wake();
+        if (s_ci_box) { lv_obj_delete(s_ci_box); s_ci_box = NULL; }
+        ci_show();
+        lv_timer_reset(t);
+    }
+    if (s_ci_cancel) {
+        s_ci_cancel = false;
+        if (link_ptt_active()) link_ptt_stop();
+        if (s_ci_box) { lv_obj_delete(s_ci_box); s_ci_box = NULL; s_ci_status = NULL; }
+    }
     int pk = s_pk_req;
     if (pk != -2) {
         s_pk_req = -2;
@@ -93,8 +180,26 @@ bool ui_confirm(const char *question, int timeout_s)
     return s_cf_result;
 }
 
+int ui_checkin(const char *head, const char *body, const char *amber_ctx, int timeout_s)
+{
+    if (!s_ci_done) return -1;
+    xSemaphoreTake(s_ci_done, 0);
+    snprintf(s_ci_head, sizeof(s_ci_head), "%s", head);
+    snprintf(s_ci_body, sizeof(s_ci_body), "%s", body);
+    snprintf(s_ci_ctx, sizeof(s_ci_ctx), "%s", amber_ctx ? amber_ctx : "");
+    s_ci_result = -1;
+    // a dark screen has no LVGL tick: light it from here so the overlay timer runs (same as wake_toast in link.c)
+    bsp_display_lock(0);
+    launcher_wake();
+    bsp_display_unlock();
+    s_ci_req = true;
+    if (xSemaphoreTake(s_ci_done, pdMS_TO_TICKS(timeout_s * 1000)) != pdTRUE) { s_ci_cancel = true; return -1; }
+    return s_ci_result;
+}
+
 void overlay_start(void)                         // call once with the LVGL lock held
 {
     s_cf_done = xSemaphoreCreateBinary();
+    s_ci_done = xSemaphoreCreateBinary();
     lv_timer_create(tick, 1000, NULL);           // 1 wake-up per second at most: a pairing code / prompt shows within 1 s
 }

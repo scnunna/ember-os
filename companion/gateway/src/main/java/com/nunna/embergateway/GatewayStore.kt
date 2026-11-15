@@ -7,6 +7,8 @@ import com.nunna.embershared.AesGcmBox
 import com.nunna.embershared.AuditEntry
 import com.nunna.embershared.AuditLog
 import com.nunna.embershared.GatewayRequest
+import com.nunna.embershared.LifeOsConfig
+import com.nunna.embershared.LifeOsPolicy
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,10 +30,15 @@ object GatewayStore {
     val pending: StateFlow<List<PendingApproval>> = _pending
     private val _audit = MutableStateFlow<List<AuditEntry>>(emptyList())
     val audit: StateFlow<List<AuditEntry>> = _audit
+    private val _lifeOs = MutableStateFlow<LifeOsConfig?>(null)
+    /** The Life OS link (base URL + device token), decrypted in memory only. */
+    val lifeOs: StateFlow<LifeOsConfig?> = _lifeOs
     private val waiting = HashMap<String, CompletableDeferred<Boolean>>()
     private var ready = false
 
     const val APPROVAL_TIMEOUT_MS = 5 * 60_000L
+
+    private const val SEP = '|'
 
     @Synchronized
     fun init(context: Context) {
@@ -41,7 +48,28 @@ object GatewayStore {
         auditFile = File(ctx.filesDir, "audit.bin")
         _audit.value = runCatching { AuditLog.decode(box.decryptString(auditFile.readBytes(), "audit")) }.getOrDefault(emptyList())
         File(ctx.filesDir, "out").apply { mkdirs() }.listFiles()?.forEach { if (System.currentTimeMillis() - it.lastModified() > 3_600_000) it.delete() }
+        _lifeOs.value = runCatching {
+            val raw = ctx.getSharedPreferences("lifeos", Context.MODE_PRIVATE).getString("enc", null) ?: return@runCatching null
+            val parts = box.decryptString(android.util.Base64.decode(raw, android.util.Base64.NO_WRAP), "lifeos").split(SEP)
+            LifeOsPolicy.config(parts[0], parts[1])
+        }.getOrNull()
         ready = true
+    }
+
+    /** Saves the Life OS link encrypted (AES-GCM, Keystore key). Returns false and saves nothing when the values are invalid. */
+    @Synchronized
+    fun setLifeOs(url: String, token: String): Boolean {
+        val c = LifeOsPolicy.config(url, token) ?: return false
+        val enc = android.util.Base64.encodeToString(box.encryptString(c.base + SEP + c.token, "lifeos"), android.util.Base64.NO_WRAP)
+        ctx.getSharedPreferences("lifeos", Context.MODE_PRIVATE).edit().putString("enc", enc).apply()
+        _lifeOs.value = c
+        return true
+    }
+
+    @Synchronized
+    fun clearLifeOs() {
+        ctx.getSharedPreferences("lifeos", Context.MODE_PRIVATE).edit().clear().apply()
+        _lifeOs.value = null
     }
 
     private fun keystoreKey(): SecretKey {

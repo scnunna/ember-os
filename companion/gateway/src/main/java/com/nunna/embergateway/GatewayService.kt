@@ -14,6 +14,7 @@ import com.nunna.embershared.Contract
 import com.nunna.embershared.Decision
 import com.nunna.embershared.GatewayPolicy
 import com.nunna.embershared.GatewayRequest
+import com.nunna.embershared.LifeOsPolicy
 import com.nunna.embershared.RequestKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,6 +53,16 @@ class GatewayService : Service() {
         val id = b.getString(Contract.K_ID) ?: return
         when (m.what) {
             Contract.MSG_CANCEL -> { jobs[id]?.cancel(); return }
+            Contract.MSG_LIFEOS_STATUS -> {
+                val c = GatewayStore.lifeOs.value
+                reply(to, Contract.MSG_RESULT, Bundle().apply {
+                    putString(Contract.K_ID, id); putBoolean(Contract.K_OK, true); putString(Contract.K_CODE, Contract.OK)
+                    putBoolean(Contract.K_CONFIGURED, c != null); putString(Contract.K_HOST, c?.host ?: "")
+                })
+            }
+            Contract.MSG_LIFEOS_TODAY, Contract.MSG_LIFEOS_CHECKINS, Contract.MSG_LIFEOS_AMBER, Contract.MSG_LIFEOS_INBOX, Contract.MSG_LIFEOS_INBOX_ACK -> {
+                jobs[id] = scope.launch { runLifeOs(m.what, id, b, to); jobs.remove(id) }
+            }
             Contract.MSG_FETCH_WATCH, Contract.MSG_DOWNLOAD_MODEL, Contract.MSG_HTTP -> {
                 jobs[id] = scope.launch { run(m.what, id, b, to); jobs.remove(id) }
             }
@@ -63,6 +74,54 @@ class GatewayService : Service() {
             putString(Contract.K_ID, id); putBoolean(Contract.K_OK, code == Contract.OK); putString(Contract.K_CODE, code)
             putString(Contract.K_MESSAGE, message); putString(Contract.K_URI, uri); putLong(Contract.K_BYTES, bytes)
         })
+    }
+
+    private fun lifeOsResult(to: Messenger?, id: String, code: String, message: String = "", status: Int = 0, body: String = "", upto: Long = -1) {
+        reply(to, Contract.MSG_RESULT, Bundle().apply {
+            putString(Contract.K_ID, id); putBoolean(Contract.K_OK, code == Contract.OK); putString(Contract.K_CODE, code)
+            putString(Contract.K_MESSAGE, message); putInt(Contract.K_STATUS, status); putString(Contract.K_BODY, body); putLong(Contract.K_UPTO, upto)
+        })
+    }
+
+    /** Life OS calls (today, checkins, amber, inbox, inbox ack): classified by [GatewayPolicy], logged, no redirects, never needs a tap. */
+    private suspend fun runLifeOs(what: Int, id: String, b: Bundle, to: Messenger?) {
+        val cfg = GatewayStore.lifeOs.value
+        if (cfg == null) { lifeOsResult(to, id, Contract.NOT_CONFIGURED, "Set up the Life OS link in Ember Gateway"); return }
+        val body = b.getString(Contract.K_BODY)
+        val method: String; val url: String; val sendBody: String?
+        when (what) {
+            Contract.MSG_LIFEOS_TODAY -> { method = "GET"; url = LifeOsPolicy.todayUrl(cfg.base, b.getString(Contract.K_DATE) ?: "", b.getInt(Contract.K_TZ, 0)); sendBody = null }
+            Contract.MSG_LIFEOS_INBOX -> { method = "GET"; url = LifeOsPolicy.inboxUrl(cfg.base, b.getString(Contract.K_AFTER) ?: ""); sendBody = null }
+            Contract.MSG_LIFEOS_CHECKINS -> { method = "POST"; url = LifeOsPolicy.checkinsUrl(cfg.base); sendBody = body ?: "" }
+            Contract.MSG_LIFEOS_AMBER -> { method = "POST"; url = LifeOsPolicy.amberUrl(cfg.base); sendBody = body ?: "" }
+            else -> { method = "POST"; url = LifeOsPolicy.inboxAckUrl(cfg.base); sendBody = body ?: "" }
+        }
+        // The audit log shows sizes, never the text the owner said.
+        val req = GatewayRequest(RequestKind.LIFEOS, method, url, -1, if (sendBody == null) "" else "(${sendBody.length} bytes)", "Life OS")
+        fun entry(outcome: String, note: String = "") = AuditEntry(System.currentTimeMillis(), req.kind.name, method, AuditLog.hostOf(url), url, 0, outcome, note)
+        val d = GatewayPolicy.classify(req, cfg.base)
+        if (d !is Decision.Auto) {
+            val reason = (d as? Decision.Deny)?.reason ?: "Not allowed"
+            GatewayStore.log(entry("BLOCKED", reason)); lifeOsResult(to, id, Contract.NOT_ALLOWED, reason); return
+        }
+        if (sendBody != null && (sendBody.isEmpty() || sendBody.length > 64 * 1024)) {
+            GatewayStore.log(entry("BLOCKED", "bad body size")); lifeOsResult(to, id, Contract.NOT_ALLOWED, "Bad body"); return
+        }
+        try {
+            val (status, text) = Transfers.lifeOs(method, url, cfg.token, sendBody)
+            val code = LifeOsPolicy.codeForStatus(status)
+            GatewayStore.log(entry(if (code == Contract.OK) "AUTO" else "FAILED", "HTTP $status"))
+            if (code != Contract.OK) { lifeOsResult(to, id, code, "Life OS answered $status", status); return }
+            var upto = -1L
+            if (what == Contract.MSG_LIFEOS_CHECKINS) upto = runCatching { org.json.JSONObject(text).getLong("upto") }.getOrDefault(-1L)
+            val returnBody = what == Contract.MSG_LIFEOS_TODAY || what == Contract.MSG_LIFEOS_AMBER || what == Contract.MSG_LIFEOS_INBOX
+            lifeOsResult(to, id, Contract.OK, "", status, if (returnBody) text else "", upto)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+        } catch (e: java.io.IOException) {
+            GatewayStore.log(entry("FAILED", "offline: " + e.javaClass.simpleName)); lifeOsResult(to, id, Contract.OFFLINE, "Could not reach Life OS")
+        } catch (e: Exception) {
+            GatewayStore.log(entry("FAILED", e.javaClass.simpleName)); lifeOsResult(to, id, Contract.IO_ERROR, e.message ?: "")
+        }
     }
 
     private suspend fun run(what: Int, id: String, b: Bundle, to: Messenger?) {

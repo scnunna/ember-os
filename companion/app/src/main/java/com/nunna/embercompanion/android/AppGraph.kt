@@ -10,6 +10,7 @@ import com.nunna.embercompanion.assistant.Confirmer
 import com.nunna.embercompanion.assistant.ToolCall
 import com.nunna.embercompanion.assistant.ToolGuard
 import com.nunna.embercompanion.assistant.ToolSpec
+import com.nunna.embercompanion.link.CheckinLog
 import com.nunna.embercompanion.link.LinkController
 import com.nunna.embercompanion.link.LinkPhase
 import com.nunna.embercompanion.link.PttClip
@@ -53,6 +54,9 @@ object AppGraph {
     lateinit var llm: LlmRuntime
     lateinit var stt: SherpaStt
     lateinit var link: LinkController
+    lateinit var checkins: CheckinLog
+    lateinit var amber: com.nunna.embercompanion.link.AmberFlow
+    val lifeStatus = MutableStateFlow<com.nunna.embercompanion.link.LifeOsStatus?>(null)
     lateinit var gatt: EmberGatt
     lateinit var ringer: Ringer
     lateinit var translator: Translator
@@ -96,6 +100,8 @@ object AppGraph {
         stt = SherpaStt { models }
         ringer = Ringer(app); tts = Tts(app)
         translator = LlmTranslator(llm)
+        val ciPersist = CheckinPersistence(app)
+        checkins = CheckinLog(ciPersist.load(), { ciPersist.save(it) })
         link = LinkController(
             transport = object : com.nunna.embercompanion.link.LinkTransport {
                 override fun write(packets: List<ByteArray>) = gatt.write(packets)
@@ -107,8 +113,15 @@ object AppGraph {
                 android.provider.Settings.Global.getString(app.contentResolver, android.provider.Settings.Global.DEVICE_NAME)
                     ?: android.os.Build.MODEL
             },
+            lifeOs = gateway,
+            checkinLog = checkins,
+            ciConfig = { prefs.ciCfg() },
         )
         gatt = EmberGatt(app) { link }
+        amber = com.nunna.embercompanion.link.AmberFlow(
+            api = gateway, send = { link.send(it) }, connected = { link.phase.value == LinkPhase.CONNECTED },
+            nowMs = { System.currentTimeMillis() }, tzOffsetSeconds = { TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000 },
+        )
         flow = TranslateFlow(
             transcribe = { s, lang -> withContext(Dispatchers.Default) { stt.transcribe(s, lang) } },
             translate = { t, f, to -> translator.translate(t, f, to) },
@@ -168,10 +181,14 @@ object AppGraph {
                 else "${Errors.WATCH_ERR}${if (m.re.isNotBlank()) " (${m.re})" else ""}: ${m.msg}. Try again; if it keeps happening, restart the watch."
                 if (appStatus.value?.startsWith("Sending") == true) appStatus.value = watchError.value
             }
+            is Message.Hello, is Message.Ci -> link.lifeTick()
             is Message.Ptt -> pttLive.value = if (m.on) m.side else null
             else -> {}
         }
     }
+
+    /** Asks Ember Gateway whether the Life OS link is set up (Settings screen). */
+    suspend fun refreshLifeStatus() { lifeStatus.value = gateway.status() }
 
     fun stopRinging() { ringer.stop(); ringing.value = false }
 
@@ -180,6 +197,7 @@ object AppGraph {
         var waited = 0
         while (!clip.complete && waited < 400) { delay(20); waited += 20 }
         val f = Resampler.toFloat(clip.samples, clip.rate, 16000)
+        if (clip.side == "amber") { talkToAmber(f, clip.ctx); return }
         runTranslation(clip.side, f)
     }
 
@@ -301,6 +319,15 @@ object AppGraph {
         } finally {
             translateBusy.value = false
         }
+    }
+
+    // ---------------------------------------------------------------- Talk to Amber (voice from the watch)
+
+    /** Whisper on the phone (same path as Translate), then the text goes to Amber through Ember Gateway. Audio never leaves the phone. */
+    private suspend fun talkToAmber(audio16k: FloatArray, ctx: Message.PttCtx?) {
+        if (!stt.ready) { link.send(Message.Amber("local", "The phone has no speech model yet. Download it in Companion Settings.", true)); return }
+        val text = try { withContext(Dispatchers.Default) { stt.transcribe(audio16k, prefs.languages.value.me) } } catch (e: Exception) { "" }
+        amber.heardVoice(text, ctx)
     }
 
     // ---------------------------------------------------------------- phone microphone (phone-only translate mode)

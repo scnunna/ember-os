@@ -46,6 +46,7 @@ class MainActivity : ComponentActivity() {
                         Screen.NOTE -> NoteScreen(openNote ?: "") { screen = Screen.NOTES.name }
                         Screen.TRANSLATE -> TranslateScreen { screen = Screen.HOME.name }
                         Screen.PRACTICE -> PracticeScreen { screen = Screen.HOME.name }
+                        Screen.AMBER -> AmberScreen { screen = Screen.HOME.name }
                         Screen.SETTINGS -> SettingsScreen(go = { screen = it.name }) { screen = Screen.HOME.name }
                         Screen.BENCH -> BenchScreen { screen = Screen.SETTINGS.name }
                     }

@@ -105,7 +105,18 @@ fun HomeScreen(go: (Screen) -> Unit) {
                 OutlinedButton(onClick = { AppGraph.link.send(Message.FindWatch) }) { Text("Find my watch (it will buzz)") }
             }
         }
+        val plan by AppGraph.link.plan.collectAsState()
+        val ciLog by AppGraph.checkins.all.collectAsState()
+        var minuteTick by remember { mutableLongStateOf(0L) }
+        LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(30_000); minuteTick++ } }
+        val nowLine = remember(plan, minuteTick) { AppGraph.link.nowLine() }
+        val adh = remember(ciLog, minuteTick) { AppGraph.link.adherence() }
+        if (nowLine != null || (adh?.percent != null)) InfoCard("Today") {
+            nowLine?.let { Text(it, style = MaterialTheme.typography.titleMedium) }
+            adh?.percent?.let { Text("On schedule: $it% (${adh.on} on it, ${adh.off} not now, ${adh.missed} missed)") }
+        }
         val items = listOf(
+            Triple("Amber", "Your personal agent: what it heard and what it said.", Screen.AMBER),
             Triple("Notifications", "Choose which apps buzz your watch.", Screen.NOTIFS),
             Triple("Steps", "Your steps this week, saved to Health Connect.", Screen.STEPS),
             Triple("Watch apps", "Add or remove little apps on the watch.", Screen.APPS),

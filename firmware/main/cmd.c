@@ -15,6 +15,7 @@
 #include "hal/usb_serial_jtag_ll.h"
 #include "bsp/esp-bsp.h"
 #include "app.h"
+#include "sched.h"
 #include "hw.h"
 #include "link.h"
 #include "ble.h"
@@ -387,6 +388,9 @@ static void run_line(char *l)
     } else if (!strncmp(l, "link ", 5)) { link_inject(l + 5); printf("CMD link injected\n"); }   // act as the phone (tests)
     else if (!strncmp(l, "linkb ", 6)) { link_inject_untrusted(l + 6); printf("CMD linkb injected\n"); }  // as if over BLE (confirm tests)
     else if (!strncmp(l, "devices", 7)) devices_print();
+    else if (!strncmp(l, "schedreset", 10)) { sched_reset(); sched_test_minute(-1); printf("CMD schedreset\n"); }
+    else if (!strncmp(l, "sched", 5)) sched_print();
+    else if (sscanf(l, "citest %d", &n) == 1) { sched_test_minute(n); vTaskDelay(pdMS_TO_TICKS(300)); printf("CMD citest %d\n", n); }
     else if (!strncmp(l, "secstate", 8)) printf("CMD secstate bonded=%d pairing_open=%d chronos=%d link_ready=%d\n", ble_bonded(), ble_pair_window_open(), hw_pref_get("chronos", 0), link_ready());
     else if (!strncmp(l, "adpcmtest", 9)) { static char hx[600]; link_adpcm_selftest(hx, sizeof(hx)); printf("CMD adpcm %s\n", hx); }
     else if (sscanf(l, "buzz %d", &n) == 1) { hw_buzz(n); printf("CMD buzz %d\n", n); }

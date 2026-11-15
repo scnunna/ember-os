@@ -80,7 +80,8 @@ class LinkService : Service() {
         job?.cancel()
         job = AppGraph.scope.launch {
             launch { combine(AppGraph.link.phase, AppGraph.link.watch, AppGraph.ringing) { _, _, _ -> }.collect { update() } }
-            while (true) { delay(60_000); AppGraph.link.tick() }
+            launch { while (true) { delay(5_000); runCatching { AppGraph.amber.tick() } } }
+            while (true) { delay(60_000); AppGraph.link.tick(); runCatching { AppGraph.link.lifeTick() } }
         }
         return START_STICKY
     }

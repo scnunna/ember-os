@@ -107,6 +107,7 @@ lv_obj_t *ui_btn(lv_obj_t *p, const char *txt, int w, int h, uint32_t color, lv_
 void ui_msg(const char *txt);
 void overlay_start(void);            // starts the overlay timer (launcher_start)
 void ui_passkey(int code);           // show the 6-digit pairing code (code < 0 hides it); any task
+int  ui_checkin(const char *head, const char *body, const char *amber_ctx, int timeout_s);   // 0 on track, 1 off track, 2 snooze, -1 none; non-LVGL task
 bool ui_confirm(const char *question, int timeout_s);   // Allow/Deny on the watch; call from a non-LVGL task
 void *ui_ud(lv_event_t *e);          // user data of a ui_btn() callback
 void cmd_start(void);                // USB serial dev shell

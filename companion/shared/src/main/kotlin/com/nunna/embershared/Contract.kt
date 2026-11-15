@@ -16,6 +16,12 @@ object Contract {
     const val MSG_DOWNLOAD_MODEL = 2
     const val MSG_HTTP = 3
     const val MSG_CANCEL = 4
+    const val MSG_LIFEOS_TODAY = 5      // date (YYYY-MM-DD) + tz (minutes east of UTC) -> JSON body
+    const val MSG_LIFEOS_CHECKINS = 6   // JSON body -> upto
+    const val MSG_LIFEOS_STATUS = 7     // is the Life OS link configured?
+    const val MSG_LIFEOS_AMBER = 8      // JSON body (text, at, ctx) -> JSON body of the reply
+    const val MSG_LIFEOS_INBOX = 9      // after (optional) -> JSON body {items:[...]}
+    const val MSG_LIFEOS_INBOX_ACK = 10 // JSON body {ids:[...]}
 
     // gateway -> companion
     const val MSG_PROGRESS = 100
@@ -41,6 +47,13 @@ object Contract {
     const val K_MESSAGE = "message"
     const val K_URI = "uri"
     const val K_BYTES = "bytes"
+    const val K_DATE = "date"
+    const val K_TZ = "tz"
+    const val K_UPTO = "upto"
+    const val K_STATUS = "status"           // HTTP status code of the Life OS reply
+    const val K_CONFIGURED = "configured"
+    const val K_HOST = "host"
+    const val K_AFTER = "after"
 
     // Result codes (the companion turns these into plain sentences)
     const val OK = "OK"
@@ -54,4 +67,6 @@ object Contract {
     const val HASH_MISMATCH = "HASH_MISMATCH"
     const val IO_ERROR = "IO_ERROR"
     const val CANCELLED = "CANCELLED"
+    const val NOT_CONFIGURED = "NOT_CONFIGURED" // Life OS link not set up in Ember Gateway
+    const val OFFLINE = "OFFLINE"               // could not reach the Life OS host
 }

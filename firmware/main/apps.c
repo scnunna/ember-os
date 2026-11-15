@@ -13,6 +13,8 @@ void app_settings_start(lv_obj_t *s); void app_settings_stop(void);
 void app_notes_start(lv_obj_t *s);    void app_notes_stop(void);
 void app_translate_start(lv_obj_t *s); void app_translate_stop(void);
 void app_practice_start(lv_obj_t *s); void app_practice_stop(void);
+void app_amber_start(lv_obj_t *s);    void app_amber_stop(void);
+void app_today_start(lv_obj_t *s);    void app_today_stop(void);
 
 const app_t APPS[] = {
     {"Steps",    LV_SYMBOL_GPS,       0x1F9D8A, app_steps_start,    app_steps_stop},
@@ -27,5 +29,7 @@ const app_t APPS[] = {
     {"Notes",    LV_SYMBOL_FILE,      0xF4A261, app_notes_start,    app_notes_stop},
     {"Translate",LV_SYMBOL_LOOP,      0xE76F51, app_translate_start,app_translate_stop},
     {"Practice", LV_SYMBOL_PLAY,      0x9B5DE5, app_practice_start, app_practice_stop},
+    {"Amber",    LV_SYMBOL_AUDIO,     0xD4882A, app_amber_start,    app_amber_stop},
+    {"Today",    LV_SYMBOL_LIST,      0x3D9970, app_today_start,    app_today_stop},
 };
 const int APP_COUNT = sizeof(APPS) / sizeof(APPS[0]);
