@@ -13,3 +13,4 @@ firmware/tools/*_last.log
 __pycache__/
 *.pyc
 *.bak
+firmware/tools/*.log
