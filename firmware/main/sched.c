@@ -106,7 +106,8 @@ static int since(const plan_t *p, int k, uint32_t date, int min)
 {
     int sm = p->slots[k];
     if (sm < 1440) return date == p->date ? min - sm : (date == next_date(p->date) ? min + 1440 - sm : 100000);
-    return date == next_date(p->date) ? min : (date == p->date ? -1 : 100000);
+    // end of day: real minutes until midnight (was -1, which made the deep-sleep timer wake every 60 s)
+    return date == next_date(p->date) ? min : (date == p->date ? min - 1440 : 100000);
 }
 
 // ------------------------------------------------------------------ from the phone
@@ -292,7 +293,8 @@ static void ask(plan_t *p, int k, bool is_prev, bool resnooze)
     char ctx[96];
     snprintf(ctx, sizeof(ctx), "{\"ci_seq\":%d,\"slot\":%d,\"date\":%lu}", hw_pref_get("ciseq", 0) + 1, sm, (unsigned long)p->date);
     printf("SCHED ask date=%lu slot=%d blocks=%d\n", (unsigned long)p->date, sm, n);
-    int r = ui_checkin(head, body, ctx, 300);            // 0 on track, 1 off track, 2 snooze, -1 no answer
+    int r = ui_checkin(head, body, ctx, 300);            // 0 on track, 1 off track, 2 snooze, -1 no answer, -2 cancelled
+    if (r == -2) return;                                 // the plan was reset while asking: nothing to record
     char a = r == 0 ? 'o' : r == 1 ? 'f' : r == 2 ? 'z' : 'm';
     s_snooze_slot = -1;
     if (a == 'z' && resnooze) a = 'm';                    // snooze works once; a second one counts as no answer
@@ -423,6 +425,7 @@ void sched_print(void)
 
 void sched_reset(void)
 {
+    ui_checkin_cancel();                                 // close an open prompt first (it belongs to the old plan)
     lock();
     memset(&s_plan, 0, sizeof(s_plan)); memset(&s_prev, 0, sizeof(s_prev)); memset(&s_q, 0, sizeof(s_q));
     s_snooze_slot = -1;

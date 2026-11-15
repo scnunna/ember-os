@@ -87,6 +87,10 @@ def gci(slot, pred=lambda d: True):
 
 for _ in range(10):
     if ask('pwr', 'CMD pwr', 2): break
+r = ask('secstate', 'CMD secstate') or ''
+if 'link_ready=1' in r:
+    print('ABORT: a phone is connected. Stop Ember Companion first (adb shell am force-stop com.nunna.embercompanion),')
+    print('otherwise the test check-ins go to your real Life OS.'); sys.exit(2)
 ask('face', 'CMD face', 5)
 ask('schedreset', 'CMD schedreset')
 check('date=0' in sched(), 'starts with no plan')
@@ -110,6 +114,9 @@ check('SCHED blk 3 780-900 done=0 MRS marketing - a very long block titl' in r a
 link({'t': 'hello_req'})
 m = got('hello')
 check(m and m.get('sd') == today and m.get('ciq') == 0, 'hello carries the plan date (sd) and queue size (ciq)', m)
+
+m = re.search(r'next_s=(\d+)', sched())
+check(m and int(m.group(1)) == 1800, 'next check-in timer = 30 min at 07:30 (deep sleep wakes for it, not every minute)', m and m.group(0))
 
 # --- 08:00: first check-in of the day lists the day ahead
 ask('citest 481', 'CMD citest')

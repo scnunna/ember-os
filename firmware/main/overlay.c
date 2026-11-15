@@ -19,7 +19,7 @@ static char s_cf_text[160];
 static lv_obj_t *s_cf_box;
 // check-in prompt (sched.c): 0 on track, 1 off track, 2 snooze
 static SemaphoreHandle_t s_ci_done;
-static volatile bool s_ci_req, s_ci_cancel;
+static volatile bool s_ci_req, s_ci_cancel, s_ci_waiting;
 static volatile int s_ci_result;
 static char s_ci_head[48], s_ci_body[240], s_ci_ctx[96];
 static lv_obj_t *s_ci_box, *s_ci_status;
@@ -181,6 +181,14 @@ bool ui_confirm(const char *question, int timeout_s)
     return s_cf_result;
 }
 
+void ui_checkin_cancel(void)
+{
+    if (!s_ci_done || !s_ci_waiting) return;
+    s_ci_result = -2;
+    s_ci_cancel = true;                           // the overlay timer removes the box
+    xSemaphoreGive(s_ci_done);
+}
+
 int ui_checkin(const char *head, const char *body, const char *amber_ctx, int timeout_s)
 {
     if (!s_ci_done) return -1;
@@ -193,8 +201,11 @@ int ui_checkin(const char *head, const char *body, const char *amber_ctx, int ti
     bsp_display_lock(0);
     launcher_wake();
     bsp_display_unlock();
+    s_ci_waiting = true;
     s_ci_req = true;
-    if (xSemaphoreTake(s_ci_done, pdMS_TO_TICKS(timeout_s * 1000)) != pdTRUE) { s_ci_cancel = true; return -1; }
+    bool got = xSemaphoreTake(s_ci_done, pdMS_TO_TICKS(timeout_s * 1000)) == pdTRUE;
+    s_ci_waiting = false;
+    if (!got) { s_ci_cancel = true; return -1; }
     return s_ci_result;
 }
 

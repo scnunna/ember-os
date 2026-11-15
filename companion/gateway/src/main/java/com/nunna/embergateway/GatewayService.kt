@@ -51,10 +51,13 @@ class GatewayService : Service() {
     }
 
     private fun handle(m: Message) {
-        val b = m.data
+        // Copy everything out of the Message NOW: Android recycles it as soon as handleMessage returns, so reading
+        // m.what inside a coroutine later gave 0 (every Life OS call became an empty "inbox/ack" and was blocked).
+        val what = m.what
+        val b = Bundle(m.data)
         val to = m.replyTo
         val id = b.getString(Contract.K_ID) ?: return
-        when (m.what) {
+        when (what) {
             Contract.MSG_CANCEL -> { jobs[id]?.cancel(); return }
             Contract.MSG_LIFEOS_STATUS -> {
                 val c = GatewayStore.lifeOs.value
@@ -64,10 +67,10 @@ class GatewayService : Service() {
                 })
             }
             Contract.MSG_LIFEOS_TODAY, Contract.MSG_LIFEOS_CHECKINS, Contract.MSG_LIFEOS_AMBER, Contract.MSG_LIFEOS_INBOX, Contract.MSG_LIFEOS_INBOX_ACK -> {
-                jobs[id] = scope.launch { runLifeOs(m.what, id, b, to); jobs.remove(id) }
+                jobs[id] = scope.launch { runLifeOs(what, id, b, to); jobs.remove(id) }
             }
             Contract.MSG_FETCH_WATCH, Contract.MSG_DOWNLOAD_MODEL, Contract.MSG_HTTP -> {
-                jobs[id] = scope.launch { run(m.what, id, b, to); jobs.remove(id) }
+                jobs[id] = scope.launch { run(what, id, b, to); jobs.remove(id) }
             }
         }
     }
