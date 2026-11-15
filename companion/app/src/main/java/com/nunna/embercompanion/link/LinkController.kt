@@ -218,7 +218,7 @@ class LinkController(
         synchronized(this) {
             if (p.gen != sentGen || p.date != sentDate || watchSd != p.date) {
                 sentGen = p.gen; sentDate = p.date
-                send(Message.Sched(p.date, p.gen, p.slots, p.blocks))
+                send(Message.Sched(p.date, p.gen, p.slots, p.blocks, p.brief))
             }
         }
     }

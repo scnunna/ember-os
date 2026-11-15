@@ -169,6 +169,19 @@ check(m and m['date'] == today and m['ans'] == 'on', 'end of day answer belongs 
 link({'t': 'sched', 'date': today, 'gen': 'old', 'blocks': []}, 1.5)
 check(got('err') is not None and f'date={tomorrow}' in sched(), 'an older plan is refused')
 
+# --- Amber's morning summary inside the 08:00 check-in (tomorrow's plan, as the phone sends it at 07:55)
+brief = 'Today: 1 block. First: Tomorrow block 10:00. Top task: send the WFF weekly review draft before lunch, then call the bank about the card.'
+link({'t': 'sched', 'date': tomorrow, 'gen': 'g3', 'brief': brief + '\n' + 'x' * 120,
+      'blocks': [{'id': 't1', 's': 600, 'e': 660, 'title': 'Tomorrow block'}]}, 2.5)
+ask('citest 1921', 'CMD citest')                      # 08:01 tomorrow
+lb = wait_labels('08:00 check-in')
+check(any(brief[:60] in x for x in lb), "08:00 check-in shows Amber's morning summary", [x for x in lb if 'Today' in x][:2])
+sm = [x for x in lb if 'Today: 1 block' in x]
+check(sm and all('|' not in x and len(x.encode()) <= 205 for x in sm), 'summary is cut to 200 bytes, no line breaks smuggled in', sm)
+tap(ON, 1.0)
+m = gci(480, lambda d: d['date'] == tomorrow)
+check(m and m['ans'] == 'on' and m['ids'] == 1, '08:00 answer still carries the day\'s blocks', m)
+
 # --- Amber messages
 ask('launch 12', 'CMD launch', 6); read_for(0.8)
 lb = labels()

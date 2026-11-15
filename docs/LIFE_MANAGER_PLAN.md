@@ -153,6 +153,7 @@ can also carry an Amber summary (for example at 08:00, "Today: 3 blocks, first W
 | `t` | Fields | Watch does |
 |---|---|---|
 | `sched` | `date` (yyyymmdd), `gen` (≤ 8), `slots` (minutes, ≤ 8, default `[480,720,960,1200,1440]`), `blocks` `[{"id","s","e","title","done"}]` (≤ 24) | Stores the day's plan in `/flash/sched.bin` (the queue in `/flash/ciq.bin`; NVS is too small). Replies `sched_ok {date, gen, n}` |
+| `sched.brief` (optional) | Amber's morning summary, ≤ 200 characters (from `GET /api/watch/today` field `brief`, written by Life OS at 07:55 by code, no LLM) | Shown in the first check-in of the day (08:00) instead of the block list. The phone folds it into `gen`, so a new brief re-sends the plan |
 | `ci_ack` | `upto` | Drops queued check-ins with seq ≤ upto |
 | `ci_cfg` | `on` (bool), `snooze` (5..60 min) | Saves them (default on, snooze 15) |
 | `amber_heard` | `text` (≤ 300) | Shows "You said: …" in the Amber screen |

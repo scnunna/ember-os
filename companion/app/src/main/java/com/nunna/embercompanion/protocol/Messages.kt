@@ -30,7 +30,9 @@ sealed interface Message {
     /** v1.4: one block of the day's plan. [s]/[e] are minutes after local midnight. */
     data class SchedBlock(val id: String, val s: Int, val e: Int, val title: String, val done: Boolean)
     /** v1.4: replace the watch's plan for [date] (yyyymmdd). */
-    data class Sched(val date: Int, val gen: String, val slots: List<Int>, val blocks: List<SchedBlock>) : Message
+    data class Sched(val date: Int, val gen: String, val slots: List<Int>, val blocks: List<SchedBlock>,
+        /** v1.4: Amber's morning summary, shown in the 08:00 check-in (max 200 characters, "" = none). */
+        val brief: String = "") : Message
     /** v1.4: the watch may drop queued check-ins with seq <= [upto]. */
     data class CiAck(val upto: Long) : Message
     /** v1.4: check-in settings. [snooze] is 5..60 minutes. */
@@ -119,6 +121,7 @@ object MessageCodec {
             put("blocks", JsonArray(m.blocks.map { b ->
                 buildJsonObject { put("id", b.id); put("s", b.s); put("e", b.e); put("title", b.title); put("done", b.done) }
             }))
+            if (m.brief.isNotEmpty()) put("brief", m.brief)
         }
         is Message.CiAck -> obj("ci_ack") { put("upto", m.upto) }
         is Message.CiCfg -> obj("ci_cfg") { put("on", m.on); put("snooze", m.snooze) }
@@ -194,7 +197,7 @@ object MessageCodec {
                 "hello" -> Message.Hello(o.str("fw") ?: "", o.str("name") ?: "", o.int("batt"), o.int("mv"), o.bool("usb"), o.int("steps"), o.int("sd"), o.int("ciq"))
                 "sched" -> Message.Sched(o.int("date"), o.str("gen") ?: "", (o["slots"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.intOrNull } ?: emptyList(), o.arr("blocks").map {
                     Message.SchedBlock(it.str("id") ?: "", it.int("s"), it.int("e"), it.str("title") ?: "", it.bool("done"))
-                })
+                }, o.str("brief") ?: "")
                 "ci_ack" -> Message.CiAck(o.long("upto"))
                 "ci_cfg" -> Message.CiCfg(o.bool("on"), o.int("snooze"))
                 "amber_heard" -> Message.AmberHeard(o.str("text") ?: "")

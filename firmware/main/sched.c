@@ -25,6 +25,7 @@ typedef struct {
     int16_t slots[SCHED_SLOTS];
     uint8_t asked;                       // bit k = slot k handled (asked, or logged as missed)
     char ans[SCHED_SLOTS];               // latest answer per slot: 0 o f z m
+    char brief[204];                     // Amber's morning summary for the first check-in ("" = none)
     blk_t b[SCHED_MAX];
 } plan_t;
 typedef struct { uint32_t seq, at, date; int16_t slot; char ans; uint8_t nids; char ids[SCHED_IDS][37]; } ci_t;
@@ -126,6 +127,14 @@ bool sched_set(const cJSON *m, char *err, size_t errn)
 #define p (*pp)
     p.date = (uint32_t)d->valuedouble;
     if (cJSON_IsString(g)) snprintf(p.gen, sizeof(p.gen), "%s", g->valuestring);
+    const cJSON *br = cJSON_GetObjectItemCaseSensitive(m, "brief");
+    if (cJSON_IsString(br)) {                    // cut to 200 bytes on a UTF-8 boundary, no control characters
+        const char *src = br->valuestring;
+        size_t L = strlen(src);
+        if (L > 200) { L = 200; while (L && ((unsigned char)src[L] & 0xC0) == 0x80) L--; }
+        memcpy(p.brief, src, L); p.brief[L] = 0;
+        for (char *c = p.brief; *c; c++) if ((unsigned char)*c < 32) *c = ' ';
+    }
     const cJSON *x;
     if (cJSON_IsArray(sl)) {
         cJSON_ArrayForEach(x, sl) {
@@ -163,7 +172,7 @@ bool sched_set(const cJSON *m, char *err, size_t errn)
         // a new plan arriving in the middle of the day: slots already past are not asked late
         uint32_t nd; int nm;
         if (now_local(&nd, &nm, NULL))
-            for (int k = 0; k < p.nslots; k++) if (since(&p, k, nd, nm) > 10) p.asked |= 1 << k;
+            for (int k = 0; k < p.nslots; k++) { int d = since(&p, k, nd, nm); if (d > 10 && d < 100000) p.asked |= 1 << k; }   // not for a future day's plan
     } else { unlock(); xSemaphoreGive(busy); snprintf(err, errn, "older plan"); return false; }
     s_plan = p;
     s_snooze_slot = -1;
@@ -263,7 +272,7 @@ static void fmt_hm(char *b, size_t n, int min) { snprintf(b, n, "%02d:%02d", (mi
 
 static void ask(plan_t *p, int k, bool is_prev, bool resnooze)
 {
-    char hm[8], head[48], body[200];
+    char hm[8], head[48], body[240];
     int sm = p->slots[k];
     fmt_hm(hm, sizeof(hm), sm);
     if (sm == 1440) snprintf(head, sizeof(head), "End of day check-in");
@@ -271,7 +280,8 @@ static void ask(plan_t *p, int k, bool is_prev, bool resnooze)
     int idx[SCHED_IDS];
     int n = window(p, k, idx, SCHED_IDS);
     int o = 0;
-    if (k == 0) o = snprintf(body, sizeof(body), n ? "Today:" : "Nothing planned today.");
+    if (k == 0 && p->brief[0]) { snprintf(body, sizeof(body), "%s", p->brief); n = 0; o = sizeof(body); }   // Amber's morning summary
+    else if (k == 0) o = snprintf(body, sizeof(body), n ? "Today:" : "Nothing planned today.");
     else { char a[8]; fmt_hm(a, sizeof(a), prev_slot_min(p, k)); o = snprintf(body, sizeof(body), n ? "Planned since %s:" : "Nothing planned since %s.", a); }
     for (int j = 0; j < n && j < 3 && o < (int)sizeof(body) - 8; j++) {
         char st[8]; fmt_hm(st, sizeof(st), p->b[idx[j]].s);

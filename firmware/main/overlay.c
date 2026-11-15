@@ -21,7 +21,7 @@ static lv_obj_t *s_cf_box;
 static SemaphoreHandle_t s_ci_done;
 static volatile bool s_ci_req, s_ci_cancel;
 static volatile int s_ci_result;
-static char s_ci_head[48], s_ci_body[200], s_ci_ctx[96];
+static char s_ci_head[48], s_ci_body[240], s_ci_ctx[96];
 static lv_obj_t *s_ci_box, *s_ci_status;
 
 void ui_passkey(int code) { s_pk_req = code < 0 ? -1 : code; }
@@ -97,7 +97,8 @@ static void ci_show(void)
     s_ci_box = panel();
     lv_obj_t *h = ui_label(s_ci_box, &lv_font_montserrat_20, C_ACCENT, s_ci_head);
     lv_obj_align(h, LV_ALIGN_TOP_MID, 0, 34);
-    lv_obj_t *q = ui_label(s_ci_box, &lv_font_montserrat_20, C_TEXT, s_ci_body);
+    // Amber's morning summary can be 200 characters: a smaller font keeps it inside the 120 px text area
+    lv_obj_t *q = ui_label(s_ci_box, strlen(s_ci_body) > 110 ? &lv_font_montserrat_14 : &lv_font_montserrat_20, C_TEXT, s_ci_body);
     lv_obj_set_width(q, 350);
     lv_label_set_long_mode(q, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_height(q, 120);

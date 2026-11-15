@@ -54,7 +54,7 @@ class CheckinLog(initial: List<Checkin>, private val persist: (List<Checkin>) ->
 }
 
 /** A day's plan as the phone knows it. */
-data class Plan(val date: Int, val gen: String, val slots: List<Int>, val blocks: List<Message.SchedBlock>)
+data class Plan(val date: Int, val gen: String, val slots: List<Int>, val blocks: List<Message.SchedBlock>, val brief: String = "")
 
 data class Adherence(val on: Int, val off: Int, val missed: Int, val snoozing: Int) {
     val total get() = on + off + missed
@@ -107,7 +107,12 @@ object LifeMath {
         }.sortedBy { it.s }.take(24)
         val slots = (o["slots"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.intOrNull?.takeIf { v -> v in 0..1440 } }?.distinct()?.sorted()?.take(8)
             ?.takeIf { it.isNotEmpty() } ?: DEFAULT_SLOTS
-        Plan(date, gen, slots, blocks)
+        // Amber's morning summary appears at ~07:55 without changing the blocks, so it is folded into gen: a new
+        // brief makes the phone re-send the plan to the watch.
+        val brief = cut((o["brief"] as? JsonPrimitive)?.contentOrNull?.replace(Regex("[\u0000-\u001f]"), " ")?.trim() ?: "", 200)
+        val g = if (brief.isEmpty()) gen else java.security.MessageDigest.getInstance("SHA-256")
+            .digest((gen + "|" + brief).toByteArray()).joinToString("") { "%02x".format(it) }.take(8)
+        Plan(date, g, slots, blocks, brief)
     }.getOrNull()
 
     /** Cut on characters (code points), never in the middle of one. */
