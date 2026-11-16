@@ -358,7 +358,9 @@ bool link_ptt_active(void) { return s_ptt; }
 static void ptt_task(void *a)
 {
     EXT_RAM_BSS_ATTR static int16_t pcm[ADPCM_BLOCK_SAMPLES];
-    uint8_t blk[ADPCM_BLOCK_BYTES];
+#define RING_N 64                                    // ~1 s of audio waiting for the link
+    EXT_RAM_BSS_ATTR static uint8_t ring[RING_N][ADPCM_BLOCK_BYTES];
+    int rh = 0, rn = 0;
     int idx = 0, got = 0, seq_total = 0;
     uint8_t seq = 0;
     int64_t t0 = esp_timer_get_time();
@@ -368,13 +370,22 @@ static void ptt_task(void *a)
         got += n;
         if (got < ADPCM_BLOCK_SAMPLES) continue;
         got = 0;
-        adpcm_encode_block(pcm, seq++, &idx, blk);
+        adpcm_encode_block(pcm, seq++, &idx, ring[(rh + rn) % RING_N]);
+        if (rn < RING_N) rn++; else { rh = (rh + 1) % RING_N; }    // ring full (>1 s behind): drop the oldest
         seq_total++;
-        if (s_conn != BLE_HS_CONN_HANDLE_NONE && s_audio_sub) {
-            struct os_mbuf *om = ble_hs_mbuf_from_flat(blk, sizeof(blk));
-            if (om) ble_gatts_notify_custom(s_conn, link_audio_handle, om);   // a lost block = 16 ms gap (seq tells the phone)
+        // send what the link takes; the rest waits (the link may still be switching to the fast rhythm)
+        while (rn && s_conn != BLE_HS_CONN_HANDLE_NONE && s_audio_sub) {
+            struct os_mbuf *om = ble_hs_mbuf_from_flat(ring[rh], ADPCM_BLOCK_BYTES);
+            if (!om || ble_gatts_notify_custom(s_conn, link_audio_handle, om) != 0) break;
+            rh = (rh + 1) % RING_N; rn--;
         }
     }
+    for (int tries = 0; rn && tries < 100 && s_conn != BLE_HS_CONN_HANDLE_NONE && s_audio_sub; tries++) {   // flush the tail
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(ring[rh], ADPCM_BLOCK_BYTES);
+        if (om && ble_gatts_notify_custom(s_conn, link_audio_handle, om) == 0) { rh = (rh + 1) % RING_N; rn--; }
+        else vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    ble_link_slow_later(3000);
     if (s_ptt_tap) hw_mic_tap_close(); else hw_mic_close();
     s_ptt_tap = false;
     s_ptt = false;
@@ -414,6 +425,7 @@ bool link_ptt_start_ex(const char *side, const char *ctx_json)
     if (s_ptt_ctx[0]) { cJSON *c = cJSON_Parse(s_ptt_ctx); if (c) cJSON_AddItemToObject(o, "ctx", c); }
     send_obj(o);
     s_ptt = true; s_ptt_task = true;
+    ble_link_fast(true);                             // audio needs short connection events
     xTaskCreate(ptt_task, "ptt", 4096, NULL, 5, NULL);
     return true;
 }

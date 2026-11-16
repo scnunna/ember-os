@@ -28,7 +28,7 @@ void hw_imu_get_g(float *x, float *y, float *z);
 void hw_buzz(int ms);                              // one pulse (non-blocking)
 void hw_buzz_pattern(int count, int on_ms, int off_ms);
 // ---- raise-to-wake (pref "raise", default on) ----
-typedef struct { int64_t t_notup, t_up_since; bool armed; } raise_t;   // t_notup = last time the screen faced away
+typedef struct { int64_t t_notup, t_up_since; bool armed; float px, py, pz; } raise_t;   // p* = previous sample   // t_notup = last time the screen faced away
 bool hw_raise_feed(raise_t *r, float x, float y, float z, int64_t t_ms);   // pure detector: true = wrist raised
 int  hw_raise_selftest(void);                      // synthetic sequences; returns number of failures
 uint32_t hw_imu_still_ms(void);       // how long the wrist has been still (adaptive polling + deep-sleep decision)

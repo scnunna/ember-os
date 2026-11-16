@@ -50,6 +50,29 @@ const char *ble_name(void) { return s_name; }
 bool ble_enabled(void) { return s_enabled; }
 bool ble_connected(void) { return s_conn != BLE_HS_CONN_HANDLE_NONE; }
 static void advertise(void);
+// Battery: the radio wakes at every connection event. Idle: ask for 90-120 ms events and let the watch skip up to 4
+// (slave latency), so it listens about every 0.5 s while still answering within one event when it has something to
+// send. Fast (15-30 ms, no latency) only while audio streams to the phone. Android decides; the result is logged.
+static volatile int s_itvl_x125;               // current interval in 1.25 ms units (0 = unknown)
+static esp_timer_handle_t s_slow_tmr;
+void ble_link_fast(bool fast)
+{
+    if (s_conn == BLE_HS_CONN_HANDLE_NONE) return;
+    struct ble_gap_upd_params p = fast
+        ? (struct ble_gap_upd_params){.itvl_min = 12, .itvl_max = 24, .latency = 0, .supervision_timeout = 500}
+        : (struct ble_gap_upd_params){.itvl_min = 72, .itvl_max = 96, .latency = 4, .supervision_timeout = 600};
+    int rc = ble_gap_update_params(s_conn, &p);
+    if (rc) ESP_LOGW(TAG, "conn update (%s) rc=%d", fast ? "fast" : "slow", rc);
+}
+int ble_link_interval_ms(void) { return s_itvl_x125 * 5 / 4; }
+static void slow_cb(void *a) { ble_link_fast(false); }
+void ble_link_slow_later(int ms)
+{
+    if (!s_slow_tmr) { esp_timer_create_args_t a = {.callback = slow_cb, .name = "bleslow"}; esp_timer_create(&a, &s_slow_tmr); }
+    esp_timer_stop(s_slow_tmr);
+    esp_timer_start_once(s_slow_tmr, (uint64_t)ms * 1000);
+}
+
 // Device tests: drop the phone and stop advertising, so nothing a test does can reach the real phone / Life OS.
 void ble_test_radio_off(bool off)
 {
@@ -321,6 +344,14 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         if (ev->subscribe.attr_handle == s_tx_handle && ev->subscribe.cur_notify) { send_info(); send_battery(); }
         link_on_subscribe(ev->subscribe.attr_handle, ev->subscribe.cur_notify);
         break;
+    case BLE_GAP_EVENT_CONN_UPDATE: {
+        struct ble_gap_conn_desc d;
+        if (ble_gap_conn_find(ev->conn_update.conn_handle, &d) == 0) {
+            s_itvl_x125 = d.conn_itvl;
+            diag_event("BLE params itvl=%dms latency=%d timeout=%dms st=%d", d.conn_itvl * 5 / 4, d.conn_latency, d.supervision_timeout * 10, ev->conn_update.status);
+        }
+        break;
+    }
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(TAG, "MTU %d", ev->mtu.value);
         break;
@@ -353,6 +384,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             if (ble_pair_window_open()) { s_pair_until = 0; hw_buzz_pattern(2, 80, 100); }   // paired: close the window
             devices_on_secure(ev->enc_change.conn_handle);    // remembered-devices list + reads its name
             link_on_secure(true);
+            ble_link_slow_later(6000);                         // after the hello/plan exchange: low-power rhythm
         } else ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_AUTH_FAIL);
         break;
     }

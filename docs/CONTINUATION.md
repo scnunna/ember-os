@@ -1,14 +1,14 @@
 # Continuation notes (start here in a new session)
 
-## 2026-11-15 16:45: OWNER IS OUT WITH THE WATCH (first time unplugged / on battery)
-When he is back: plug in, then `python tools/...` dump `diaglog 256` (shell) and /flash/power.csv; check BLE drops
-(reason codes), deep sleeps, battery %/h, steps, check-in answers (20:00, 00:00), Amber use, any CRASH/BROWNOUT boot.
-Firmware on the watch: diag log + compressed meeting recordings + power button + hold=Amber (this commit).
-Open bugs: (1) second Wi-Fi hotspot start in a row fails "low memory" (security_test 16/18): internal DMA RAM not
-fully returned after the first hotspot; (2) shell "diagnote" is shadowed by the "diag" prefix (reorder in cmd.c).
-No firmware update over Bluetooth exists (USB only).
-
-Last updated 2026-11-15 10:40 local.
+## Battery (owner: "major concern") - first outing 2026-11-15 16:45-20:55, steps only
+Data (diag.log): 4.2 h, 12,254 steps, BLE connected throughout (0 drops), 0 crashes, battery 100 -> 12 % = ~21 %/h,
+screen on 52 % of the time (active_s 7882 of 15181), 95 wakes, 0 deep sleeps, 20:00 check-in logged missed.
+Causes found: (1) raise-to-wake revived a DIMMED screen and reset its timer -> arm swing kept the screen on;
+(2) phone link at 48 ms, latency 0 (~21 radio wakes/s); (3) 50 Hz IMU polling while walking.
+Fixed 21:05: raise only from a dark screen + must hold face-up and still 400 ms (self-test "walking-swing"),
+timeout 20+8 s -> 10+4 s, BLE idle params 120 ms latency 4 (Android accepted; fast 15-30 ms only during PTT, with a
+1 s audio ring), SNAP now logs on_5min, raise count, itvl. NEXT: measure %/h on the next outing; then IMU 25 Hz/FIFO,
+brightness default, check-in prompt timeout vs "missed".
 
 ## State
 - Firmware 1.2 (Ember Link v1.4, Amber check-ins + voice): flashed. tools/amber_test.py 33/33 on the real watch.

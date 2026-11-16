@@ -236,17 +236,25 @@ static void motor_init(void)
 // ---------------------------------------------------------------- raise-to-wake (pure detector + synthetic self-test)
 // "Face up" = gravity mostly along the screen normal. On this board the screen-up reading is z = -1 g (measured on a
 // desk), so the sign is a pref ("rsign", default -1) in case a strap mounts it differently.
-// Trigger: the watch becomes face-up (tilt up to ~50 deg toward the eyes allowed) within 1.5 s after NOT being face-up,
-// and stays face-up for 200 ms. Lying on a desk never re-triggers (needs a fresh not-face-up -> face-up transition).
+// Trigger: the watch becomes face-up (tilt up to ~50 deg toward the eyes allowed) within 1 s after NOT being face-up,
+// and then stays face-up AND STILL for 400 ms (each 20 ms sample moves < 0.12 g). An arm swinging while walking passes
+// through face-up but never holds still, so it does not wake the screen (that was ~half the battery on 2026-11-15).
+// Lying on a desk never re-triggers (needs a fresh not-face-up -> face-up transition).
 static int s_rsign = -1;
 bool hw_raise_feed(raise_t *r, float x, float y, float z, int64_t t)
 {
     bool up = (s_rsign * z > 0.6f) && fabsf(x) < 0.6f && fabsf(y) < 0.8f;
     if (s_rsign * z < 0.2f) r->t_notup = t;                 // "far": screen vertical or facing away
     if (!up) { r->t_up_since = 0; r->armed = true; return false; }
+    float moved = fabsf(x - r->px) + fabsf(y - r->py) + fabsf(z - r->pz);
+    r->px = x; r->py = y; r->pz = z;
     if (r->t_up_since == 0) r->t_up_since = t;
-    // a real raise turns the screen from far to face-up in under a second; a slow put-down does not
-    if (r->armed && t - r->t_up_since >= 200 && r->t_notup && r->t_up_since - r->t_notup <= 1000) { r->armed = false; return true; }
+    else if (moved > 0.12f) {                               // still swinging: restart the hold, but only within the raise window
+        r->t_up_since = t;
+        if (r->t_notup && t - r->t_notup > 1000) r->armed = false;   // too late for a raise now
+    }
+    // a real raise turns the screen from far to face-up in under a second and then holds still; a slow put-down does not
+    if (r->armed && t - r->t_up_since >= 400 && r->t_notup && r->t_up_since - r->t_notup <= 1000) { r->armed = false; return true; }
     return false;
 }
 int hw_raise_selftest(void)
@@ -272,6 +280,14 @@ int hw_raise_selftest(void)
     for (int i = 0; i < 250; i++, t += 20) { float k = i / 250.0f; hits += hw_raise_feed(&r, -1.0f + k, 0, s * k, t); }
     for (int i = 0; i < 100; i++, t += 20) hits += hw_raise_feed(&r, 0, 0, s * 1.0f, t);
     if (hits != 0) { fails++; printf("RAISE FAIL slow-putdown hits=%d\n", hits); }
+    // 5) walking: the arm swings through face-up about once a second without stopping: never
+    memset(&r, 0, sizeof(r)); hits = 0; t = 1000;
+    for (int i = 0; i < 600; i++, t += 20) {
+        float ph = (i % 50) / 50.0f;                        // 1 s swing period
+        float k = ph < 0.5f ? ph * 2 : (1 - ph) * 2;        // 0 -> 1 -> 0
+        hits += hw_raise_feed(&r, -1.0f + k * 1.05f, 0.1f, s * k * 0.95f, t);
+    }
+    if (hits != 0) { fails++; printf("RAISE FAIL walking-swing hits=%d\n", hits); }
     return fails;
 }
 

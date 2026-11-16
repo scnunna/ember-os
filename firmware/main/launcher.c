@@ -22,7 +22,7 @@ static int total_apps(void) { return APP_COUNT + script_count(); }
 static void app_stop_idx(int i) { if (i >= APP_COUNT) script_stop(); else if (i >= 0 && APPS[i].stop) APPS[i].stop(); }
 
 static int bright(void) { return hw_pref_get("bright", 70); }
-static int timeout_s(void) { return hw_pref_get("timeout", 20); }
+static int timeout_s(void) { return hw_pref_get("timeout", 10); }   // was 20: screen time is the biggest drain
 
 static void screen_set(bool on)
 {
@@ -35,9 +35,12 @@ static void screen_set(bool on)
     script_pause(!on);
 }
 bool launcher_screen_on(void) { return s_on; }
+static uint32_t s_raise_wakes;
+uint32_t launcher_raise_wakes(void) { return s_raise_wakes; }
 void launcher_raise(void)
 {
-    if (s_on && !s_dim) return;
+    if (s_on) return;                            // only a dark screen: a raise while dimmed no longer keeps it alive
+    s_raise_wakes++;
     bsp_display_lock(0);
     launcher_wake();
     bsp_display_unlock();
@@ -254,7 +257,7 @@ static void idle_cb(lv_timer_t *t)
     uint32_t idle = lv_tick_elaps(s_last_act) / 1000;
     int to = timeout_s();
     if (s_on && !s_dim && idle >= (uint32_t)to) { s_dim = true; bsp_display_brightness_set(bright() / 4); }
-    else if (s_on && s_dim && idle >= (uint32_t)to + 8) { screen_set(false); }
+    else if (s_on && s_dim && idle >= (uint32_t)to + 4) { screen_set(false); }
     if (s_on) face_tick();
 }
 

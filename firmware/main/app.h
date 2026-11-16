@@ -34,6 +34,7 @@ void launcher_touch_stats(unsigned *reads, unsigned *presses);   // real-control
 unsigned touch_read_max_ms(void);   // slowest touch-controller read so far   // failed (and ignored) touch-controller reads
 void launcher_gesture_dbg(unsigned *n, int *dir, unsigned *swallowed);
 bool launcher_screen_on(void);
+uint32_t launcher_raise_wakes(void);   // screen wake-ups caused by raising the wrist
 
 // ---- power manager (power.c) ----
 typedef struct { int64_t ms_active, ms_doze; uint32_t wakes, deep_count; bool sleep_allowed, screen_on; } power_stats_t;

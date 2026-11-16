@@ -371,7 +371,7 @@ static void run_line(char *l)
     } else if (!strncmp(l, "layout", 6)) cmd_layout();
     else if (!strncmp(l, "touch", 5)) cmd_touch();
     else if (sscanf(l, "nav %d", &n) == 1) cmd_nav(n);
-    else if (!strncmp(l, "diag", 4)) {
+    else if (!strncmp(l, "diag", 4) && (l[4] == 0 || l[4] == ' ' || l[4] == 13)) {
         bool lock_ok = bsp_display_lock(500);
         if (lock_ok) bsp_display_unlock();
         TaskHandle_t lv = xTaskGetHandle("taskLVGL");

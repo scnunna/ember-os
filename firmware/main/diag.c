@@ -119,9 +119,11 @@ static void snapshot(void)
 {
     batt_t b; hw_batt(&b);
     power_stats_t p; power_stats(&p);
-    diag_event("SNAP batt=%d%% mv=%d chg=%d usb=%d steps=%lu ble=%d link=%d screen=%d wakes=%lu deep=%lu dma=%u dma_min=%u psram=%u lost_lines=%lu",
-               b.pct, b.mv, b.charging, b.vbus, (unsigned long)hw_steps_today(), ble_connected(), link_ready(), launcher_screen_on(),
-               (unsigned long)p.wakes, (unsigned long)p.deep_count,
+    static int64_t last_on;
+    int64_t on_s = p.ms_active / 1000, d_on = on_s - last_on; last_on = on_s;
+    diag_event("SNAP batt=%d%% mv=%d chg=%d usb=%d steps=%lu ble=%d link=%d itvl=%dms screen=%d on_5min=%llds raise=%lu wakes=%lu deep=%lu dma=%u dma_min=%u psram=%u lost_lines=%lu",
+               b.pct, b.mv, b.charging, b.vbus, (unsigned long)hw_steps_today(), ble_connected(), link_ready(), ble_link_interval_ms(), launcher_screen_on(),
+               (long long)d_on, (unsigned long)launcher_raise_wakes(), (unsigned long)p.wakes, (unsigned long)p.deep_count,
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
                (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), (unsigned long)s_dropped_lines);
