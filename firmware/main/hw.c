@@ -5,6 +5,7 @@
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -435,12 +436,15 @@ static uint32_t s_mic_rate;
 // ---- mic: single owner, but a 16 kHz owner can share its stream with one listener (the "tap") ----
 static char s_mic_who[16], s_mic_what[40];
 static uint32_t s_mic_gen;                      // session ticket: only the session that opened the mic may close it
+static volatile bool s_park_hold;               // a paused recording will reopen the mic: don't park the I2S
+void hw_audio_park_hold(bool hold) { s_park_hold = hold; }
 uint32_t hw_mic_session(void) { return s_mic_open ? s_mic_gen : 0; }
 void hw_mic_close(void);
 void hw_mic_close_session(uint32_t gen) { if (gen && s_mic_open && gen == s_mic_gen) hw_mic_close(); }
 static int64_t s_mic_since;
 #include "freertos/stream_buffer.h"
 static StreamBufferHandle_t s_tap;              // copy of every frame the owner reads (Amber while a meeting records)
+static SemaphoreHandle_t s_tap_mtx;             // guards s_tap: the owner copies into it while the listener may delete it
 bool hw_mic_open_as(uint32_t rate, float gain_db, const char *who, const char *what)
 {
     if (s_mic_open) return false;          // mic is single-owner
@@ -473,15 +477,20 @@ int hw_mic_read_mono(int16_t *out, int frames)
     if (frames > 1024) frames = 1024;
     if (esp_codec_dev_read(s_mic, tmp, frames * 4) != ESP_CODEC_DEV_OK) return 0;
     for (int i = 0; i < frames; i++) out[i] = (int16_t)(((int)tmp[2 * i] + (int)tmp[2 * i + 1]) / 2);
-    StreamBufferHandle_t t = s_tap;
-    if (t) xStreamBufferSend(t, out, frames * 2, 0);   // never blocks the owner; a full tap just drops
+    if (s_tap && s_tap_mtx && xSemaphoreTake(s_tap_mtx, 0) == pdTRUE) {   // never blocks the owner
+        if (s_tap) xStreamBufferSend(s_tap, out, frames * 2, 0);           // a full tap just drops
+        xSemaphoreGive(s_tap_mtx);
+    }
     return frames;
 }
 bool hw_mic_tap_open(uint32_t rate)
 {
     if (!s_mic_open || s_mic_rate != rate || s_tap) return false;
-    s_tap = xStreamBufferCreateWithCaps(32 * 1024, 2, MALLOC_CAP_SPIRAM);    // ~1 s of 16 kHz audio
-    return s_tap != NULL;
+    if (!s_tap_mtx) s_tap_mtx = xSemaphoreCreateMutex();
+    StreamBufferHandle_t t = xStreamBufferCreateWithCaps(32 * 1024, 2, MALLOC_CAP_SPIRAM);    // ~1 s of 16 kHz audio
+    if (!t) return false;
+    xSemaphoreTake(s_tap_mtx, portMAX_DELAY); s_tap = t; xSemaphoreGive(s_tap_mtx);
+    return true;
 }
 int hw_mic_tap_read(int16_t *out, int frames, int timeout_ms)
 {
@@ -491,15 +500,24 @@ int hw_mic_tap_read(int16_t *out, int frames, int timeout_ms)
 }
 void hw_mic_tap_close(void)
 {
+    if (!s_tap_mtx) return;
+    // under the lock: the owner can no longer be inside a send when the buffer is freed (a 20 ms "grace" sleep was not
+    // enough when the recorder task got pre-empted mid-send -> heap corruption -> tlsf_free assert, 2026-11-16)
+    xSemaphoreTake(s_tap_mtx, portMAX_DELAY);
     StreamBufferHandle_t t = s_tap;
     s_tap = NULL;
-    if (t) { vTaskDelay(pdMS_TO_TICKS(20)); vStreamBufferDeleteWithCaps(t); }   // let an in-flight send finish
+    xSemaphoreGive(s_tap_mtx);
+    if (t) vStreamBufferDeleteWithCaps(t);
 }
 void hw_mic_close(void)
 {
     if (!s_mic_open) return;
     esp_codec_dev_close(s_mic);
     s_mic_open = false;
+    // closing the mic leaves the paired TX channel enabled (and its power lock held = no light sleep): re-park,
+    // except while a recording is only paused (it reopens at its own rate in a moment; parking in between at 16 kHz
+    // tripped the task watchdog in "Pause, talk, resume")
+    if (!s_spk_open && !s_park_hold) hw_audio_park();
     s_mic_who[0] = s_mic_what[0] = 0;
 }
 bool hw_spk_open(uint32_t rate, int vol)
@@ -549,18 +567,31 @@ void hw_beep(int hz, int ms, int vol)
 // The Waveshare BSP sets up I2S the first time a codec is requested and ABORTS the whole watch (ESP_ERROR_CHECK) if
 // its DMA buffers can't be allocated. Doing that lazily (first beep/recording) crashed every sound-making app once
 // Bluetooth + display had used the internal DMA memory. So: claim it here, at boot, while memory is plentiful.
+void hw_audio_park(void);
 static void hw_audio_preinit(void)
 {
     size_t before = heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     s_spk = bsp_audio_codec_speaker_init();
     s_mic = bsp_audio_codec_microphone_init();
-    // Codec setup leaves the I2S channels running (wastes power, blocks light sleep); one open/close parks them.
-    esp_codec_dev_sample_info_t o = {.bits_per_sample = 16, .channel = 1, .sample_rate = 16000};
-    if (s_spk && esp_codec_dev_open(s_spk, &o) == ESP_CODEC_DEV_OK) esp_codec_dev_close(s_spk);
-    esp_codec_dev_sample_info_t i = {.bits_per_sample = 16, .channel = 2, .sample_rate = 16000};
-    if (s_mic && esp_codec_dev_open(s_mic, &i) == ESP_CODEC_DEV_OK) esp_codec_dev_close(s_mic);
+    // Codec setup leaves the I2S channels running (wastes power, blocks light sleep): park both (see hw_audio_park).
+    hw_audio_park();
     ESP_LOGI(TAG, "audio ready: speaker=%d mic=%d (used %u B DMA RAM)", s_spk != NULL, s_mic != NULL,
              (unsigned)(before - heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)));
+}
+
+// Parks both I2S channels so the I2S driver releases its power-management lock (a held i2s_driver lock blocks light
+// sleep entirely: measured 2026-11-16, held 98 % of the time). The BSP enables TX and RX itself, behind
+// esp_codec_dev's back; esp_codec_dev defers disabling one direction while it thinks the other is open. Opening both
+// (so it knows both) and closing RX then TX leaves both disabled. No-op while audio is in use.
+void hw_audio_park(void)
+{
+    if (s_mic_open || s_spk_open || !s_spk || !s_mic) return;
+    esp_codec_dev_sample_info_t o = {.bits_per_sample = 16, .channel = 1, .sample_rate = 16000};
+    esp_codec_dev_sample_info_t i = {.bits_per_sample = 16, .channel = 2, .sample_rate = 16000};
+    bool so = esp_codec_dev_open(s_spk, &o) == ESP_CODEC_DEV_OK;
+    bool mo = esp_codec_dev_open(s_mic, &i) == ESP_CODEC_DEV_OK;
+    if (mo) esp_codec_dev_close(s_mic);
+    if (so) esp_codec_dev_close(s_spk);
 }
 
 // ---------------------------------------------------------------- init

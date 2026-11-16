@@ -61,3 +61,6 @@ CONFIG_BT_NIMBLE_SM_SC_ONLY=1
 # Wi-Fi code in flash instead of internal RAM: the hotspot only serves a few files, internal RAM is the bottleneck
 CONFIG_ESP_WIFI_IRAM_OPT=n
 CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+
+# battery work: light-sleep time + wake count in the diag snapshots (main/diag.c)
+CONFIG_PM_PROFILING=y

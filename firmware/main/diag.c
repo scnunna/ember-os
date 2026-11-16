@@ -5,6 +5,7 @@
 // Lines go to a RAM ring first and are appended to flash once a minute and right before deep sleep, so logging never
 // blocks a task on storage. A "last event" breadcrumb survives a crash/watchdog reset and is reported at the next boot.
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
 #include <time.h>
@@ -115,15 +116,43 @@ void diag_flush(void)
     s_in_hook = 0;
 }
 
+// Light sleep since boot (us) and how many times the chip went to sleep, parsed from esp_pm_dump_locks (needs
+// CONFIG_PM_PROFILING). The snapshot turns them into "% of the last 5 min asleep" and "wake-ups per second".
+#include "esp_pm.h"
+static bool pm_sample(int64_t *sleep_us, uint32_t *counts)
+{
+    EXT_RAM_BSS_ATTR static char buf[1536];
+    FILE *f = fmemopen(buf, sizeof(buf) - 1, "w");
+    if (!f) return false;
+    esp_pm_dump_locks(f);
+    long n = ftell(f); fclose(f);
+    if (n <= 0) return false;
+    buf[n < (long)sizeof(buf) - 1 ? n : (long)sizeof(buf) - 1] = 0;
+    *sleep_us = 0; *counts = 0;
+    char *p = strstr(buf, "\nSLEEP");
+    if (p) { long long us = 0; if (sscanf(p + 1, "SLEEP %*s %lld", &us) == 1) *sleep_us = us; }
+    char *q = strstr(buf, "light_sleep_counts:");
+    if (q) *counts = (uint32_t)strtoul(q + 19, NULL, 10);
+    return p != NULL;
+}
+
 static void snapshot(void)
 {
     batt_t b; hw_batt(&b);
     power_stats_t p; power_stats(&p);
-    static int64_t last_on;
+    static int64_t last_on, last_sleep, last_t;
+    static uint32_t last_cnt;
     int64_t on_s = p.ms_active / 1000, d_on = on_s - last_on; last_on = on_s;
-    diag_event("SNAP batt=%d%% mv=%d chg=%d usb=%d steps=%lu ble=%d link=%d itvl=%dms screen=%d on_5min=%llds raise=%lu wakes=%lu deep=%lu dma=%u dma_min=%u psram=%u lost_lines=%lu",
+    int64_t sl = 0, now = esp_timer_get_time(); uint32_t cnt = 0;
+    int sleep_pct = -1; float wakes_s = -1;
+    if (pm_sample(&sl, &cnt) && last_t) {
+        int64_t dt = now - last_t;
+        if (dt > 0) { sleep_pct = (int)((sl - last_sleep) * 100 / dt); wakes_s = (cnt - last_cnt) * 1e6f / dt; }
+    }
+    last_sleep = sl; last_cnt = cnt; last_t = now;
+    diag_event("SNAP batt=%d%% mv=%d chg=%d usb=%d steps=%lu ble=%d link=%d itvl=%dms screen=%d on_5min=%llds sleep=%d%% wk/s=%.1f raise=%lu wakes=%lu deep=%lu dma=%u dma_min=%u psram=%u lost_lines=%lu",
                b.pct, b.mv, b.charging, b.vbus, (unsigned long)hw_steps_today(), ble_connected(), link_ready(), ble_link_interval_ms(), launcher_screen_on(),
-               (long long)d_on, (unsigned long)launcher_raise_wakes(), (unsigned long)p.wakes, (unsigned long)p.deep_count,
+               (long long)d_on, sleep_pct, wakes_s, (unsigned long)launcher_raise_wakes(), (unsigned long)p.wakes, (unsigned long)p.deep_count,
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
                (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), (unsigned long)s_dropped_lines);

@@ -39,9 +39,8 @@ static void sheet_cancel(lv_event_t *e) { close_sheet(); set_status("Hold to tal
 static void sheet_pause(lv_event_t *e)
 {
     close_sheet();
-    if (!rec_pause(true)) { set_status("Could not pause the recording"); return; }
-    s_resume_rec = true;
-    if (!start_talk(true)) { rec_pause(false); s_resume_rec = false; }
+    if (!rec_pause_for_mic()) { set_status("Could not pause the recording"); return; }   // resumes by itself after Amber
+    start_talk(true);
 }
 static void sheet_save(lv_event_t *e)
 {

@@ -97,6 +97,7 @@ bool     rec_start(rec_mode_t m);
 void     rec_stop(void);
 bool     rec_pause(bool on);     // pause hands the mic to someone else; the file stays open, resume continues it
 bool     rec_paused(void);
+bool     rec_pause_for_mic(void);   // pause; resumes BY ITSELF once the next mic user (Amber) is done
 bool     rec_toggle(rec_mode_t m);
 const char *rec_last_file(void);
 

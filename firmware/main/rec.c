@@ -174,7 +174,8 @@ static void writer_task(void *arg)
 }
 
 // Capture: reads the mic continuously (never blocks on storage) and feeds the stream buffer.
-static volatile bool s_pause_req, s_paused;
+static volatile bool s_pause_req, s_paused, s_auto_resume, s_seen_taken;
+static int64_t s_paused_at;
 static volatile uint32_t s_rec_mic;
 static bool mic_open_for_rec(void)
 {
@@ -188,9 +189,14 @@ static void rec_task(void *arg)
     s_cap_t0 = esp_timer_get_time();
     while (!s_stop) {
         // pause: hand the mic to someone else (Amber) without closing the file; resume reopens it
-        if (s_pause_req && !s_paused) { hw_mic_close_session(s_rec_mic); s_level = 0; s_paused = true; }
+        if (s_pause_req && !s_paused) { hw_audio_park_hold(true); hw_mic_close_session(s_rec_mic); s_level = 0; s_paused = true; s_seen_taken = false; s_paused_at = esp_timer_get_time(); }
+        if (s_paused && s_auto_resume) {      // paused for Amber: resume as soon as Amber is done with the mic
+            bool busy = hw_mic_owner(NULL, 0, NULL, 0, NULL, NULL);
+            if (busy) s_seen_taken = true;
+            else if (s_seen_taken || esp_timer_get_time() - s_paused_at > 2000000) { s_pause_req = false; s_auto_resume = false; }
+        }
         if (s_paused) {
-            if (!s_pause_req && mic_open_for_rec()) { s_paused = false; rec_mark(); }   // a bookmark where it resumed
+            if (!s_pause_req && mic_open_for_rec()) { s_paused = false; hw_audio_park_hold(false); rec_mark(); }   // a bookmark where it resumed
             else { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
         }
         int n = hw_mic_read_mono(pcm, 1024);
@@ -203,7 +209,9 @@ static void rec_task(void *arg)
         s_level = lv < 0 ? 0 : (lv > 100 ? 100 : lv);
         if (xStreamBufferSend(s_sb, pcm, n * 2, 0) != (size_t)(n * 2)) s_dropped += n;
     }
+    hw_audio_park_hold(false);
     if (!s_paused) hw_mic_close_session(s_rec_mic);
+    else if (!hw_mic_owner(NULL, 0, NULL, 0, NULL, NULL)) hw_audio_park();   // ended while paused: park now
     s_paused = s_pause_req = false;
     s_level = 0;
     s_cap_done = true;
@@ -218,6 +226,7 @@ bool rec_pause(bool on)
     return s_paused == on;
 }
 bool rec_paused(void) { return s_active && s_paused; }
+bool rec_pause_for_mic(void) { if (!s_active) return false; s_auto_resume = true; return rec_pause(true); }
 
 bool rec_start(rec_mode_t m)
 {

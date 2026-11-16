@@ -1,5 +1,23 @@
 # Continuation notes (start here in a new session)
 
+## 2026-11-16 overnight (owner asleep: DO NOT touch his phone - no rings, no installs)
+- BIGGEST battery bug found: the I2S driver's power lock (APB_FREQ_MAX) was held ~98 % of the time with no audio playing
+  -> light sleep NEVER happened. Cause: the BSP enables both I2S channels behind esp_codec_dev's back; esp_codec_dev
+  defers disabling one direction. Fix: hw_audio_park() at boot and after every mic close (not while a recording is
+  only paused). Verified with `pmstats` (CONFIG_PM_PROFILING): both i2s locks released after boot/rec/beep/voice.
+  The diag snapshot now logs sleep=% and wk/s per 5 min -> the next outing measures the real gain.
+- Screen dark => all LVGL timers pause (300 ms after), mic apps (Tuner/Sound/Translate) close; recorder paused for
+  Amber resumes by itself (rec_pause_for_mic).
+- Crashes fixed: mic close by a stopped app (session tickets); mic-tap buffer freed during a send (mutex); task
+  watchdog when parking I2S during a paused 44.1 kHz recording (park hold).
+- All device tests take the phone off the link (ember.open_watch radio=False default). Ringer bug fixed on the phone
+  (orphan looping ringtone; 60 s auto-stop). tools/clean_test_recs.py deletes test recordings (run after test sessions).
+- Amber speaks (v1.5): firmware SPK + jitter buffer + Settings "Amber voice"; phone TTS side built (112 tests).
+  New APKs are on the tailnet install page (NOT installed on the phone).
+- Open for the owner: battery purchase (MX1.25 2-pin, 3.7 V, protected LiPo; measure the cavity first; Waveshare does
+  not publish capacity/dimensions), 6 h/day recording sync plan (Wi-Fi bulk sync while charging; Google Drive needs
+  either the Drive API in Gateway or Life OS/VPS + rclone - owner decision), install the new APKs.
+
 ## Battery (owner: "major concern") - first outing 2026-11-15 16:45-20:55, steps only
 Data (diag.log): 4.2 h, 12,254 steps, BLE connected throughout (0 drops), 0 crashes, battery 100 -> 12 % = ~21 %/h,
 screen on 52 % of the time (active_s 7882 of 15181), 95 wakes, 0 deep sleeps, 20:00 check-in logged missed.

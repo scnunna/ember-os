@@ -44,6 +44,8 @@ void hw_storage_info(uint64_t *total, uint64_t *free_bytes);
 bool hw_mic_open(uint32_t rate, float gain_db);
 int  hw_mic_read_mono(int16_t *out, int frames);   // returns frames read (0 on error)
 void hw_mic_close(void);
+void hw_audio_park(void);
+void hw_audio_park_hold(bool hold);         // recording paused: closing the mic must not park the I2S                   // release the I2S power lock (both channels off) when no audio is in use
 uint32_t hw_mic_session(void);              // ticket of the current mic session (0 = closed); take it right after opening
 void hw_mic_close_session(uint32_t gen);    // closes only if that session still owns the mic (a late close is ignored)
 bool hw_mic_open_as(uint32_t rate, float gain_db, const char *who, const char *what);   // who/what show in "mic in use"

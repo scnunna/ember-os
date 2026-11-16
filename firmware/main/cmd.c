@@ -1,4 +1,4 @@
-﻿// USB serial command shell for development / end-to-end tests (no effect unless the PC sends a command).
+// USB serial command shell for development / end-to-end tests (no effect unless the PC sends a command).
 //   settime Y M D h m s   set the RTC (the flash scripts do this automatically)
 //   layout                open every screen and report overlapping / off-screen widgets
 //   nav N                 random navigation stress test (N steps)
@@ -19,6 +19,7 @@
 #include "sched.h"
 #include "adpcm.h"
 #include "speak.h"
+#include "esp_pm.h"
 #include "diag.h"
 #include "hw.h"
 #include "link.h"
@@ -447,6 +448,8 @@ static void run_line(char *l)
     else if (sscanf(l, "diaglog %d", &n) == 1) diag_dump(n);           // last n KB of /flash/diag.log
     else if (!strncmp(l, "diagclear", 9)) { diag_clear(); printf("CMD diagclear\n"); }
     else if (!strncmp(l, "diagnote ", 9)) { diag_event("NOTE %s", l + 9); diag_flush(); printf("CMD diagnote\n"); }
+    else if (!strncmp(l, "pmstats", 7)) { esp_pm_dump_locks(stdout); printf("CMD pmstats\n"); }
+    else if (!strncmp(l, "i2spark", 7)) { hw_audio_park(); printf("CMD i2spark\n"); }
     else if (!strncmp(l, "saytest", 7)) {                       // plays a 1.5 s chime through the v1.5 voice path
         const int nb = 94;                                      // 94 x 16 ms = 1.5 s
         uint8_t *blks = heap_caps_malloc(nb * ADPCM_BLOCK_BYTES, MALLOC_CAP_SPIRAM);

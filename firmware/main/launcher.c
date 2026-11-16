@@ -26,15 +26,32 @@ static int bright(void) { return hw_pref_get("bright", 60); }
 static int timeout_s(void) { return hw_pref_get("timeout", 10); }   // full brightness (owner 2026-11-15: 10 s)
 static int dimfor_s(void) { return hw_pref_get("dimfor", 5); }       // then dimmed 5 s, then off (owner: 10 s + 5 s)
 
+// While the screen is dark nothing on it needs updating: all LVGL timers (app refresh, touch reading, overlay) pause
+// 300 ms after it goes dark (time for a closing slide to finish) and resume on the BOOT press. Work that must go on
+// runs in its own tasks (recording, metronome beat, countdown, check-ins, Bluetooth). Apps that listen on the mic
+// (Tuner, Sound, Translate) are closed when the screen goes dark: the mic was a big drain.
+void launcher_face(void);
+static lv_timer_t *s_quiet_tmr;
+static void quiet_cb(lv_timer_t *t) { s_quiet_tmr = NULL; if (!s_on) lv_timer_enable(false); }
+static bool mic_app_open(void)
+{
+    if (s_state != ST_APP || s_cur < 0 || s_cur >= APP_COUNT) return false;
+    const char *n = APPS[s_cur].name;
+    return !strcmp(n, "Tuner") || !strcmp(n, "Sound") || !strcmp(n, "Translate");
+}
 static void screen_set(bool on)
 {
     bool was = s_on;
+    if (on && !was) lv_timer_enable(true);
+    if (!on && was && mic_app_open()) launcher_face();
     s_on = on; s_dim = false;
     if (on && !was) power_update(true);          // panel out of sleep before the brightness command
     bsp_display_brightness_set(on ? bright() : 0);
     if (!on && was) power_update(false);
     if (s_idle_tmr) { if (on) lv_timer_resume(s_idle_tmr); else lv_timer_pause(s_idle_tmr); }
     script_pause(!on);
+    if (on && s_quiet_tmr) { lv_timer_delete(s_quiet_tmr); s_quiet_tmr = NULL; }
+    if (!on && was && !s_quiet_tmr) { s_quiet_tmr = lv_timer_create(quiet_cb, 300, NULL); lv_timer_set_repeat_count(s_quiet_tmr, 1); }
 }
 bool launcher_screen_on(void) { return s_on; }
 static uint32_t s_raise_wakes;
