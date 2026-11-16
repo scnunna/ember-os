@@ -175,9 +175,12 @@ static void writer_task(void *arg)
 
 // Capture: reads the mic continuously (never blocks on storage) and feeds the stream buffer.
 static volatile bool s_pause_req, s_paused;
+static volatile uint32_t s_rec_mic;
 static bool mic_open_for_rec(void)
 {
-    return hw_mic_open_as(s_rate, s_mode == REC_MUSIC ? 18.0f : 30.0f, "Recorder", s_mode == REC_MUSIC ? "music recording" : "meeting recording");
+    if (!hw_mic_open_as(s_rate, s_mode == REC_MUSIC ? 18.0f : 30.0f, "Recorder", s_mode == REC_MUSIC ? "music recording" : "meeting recording")) return false;
+    s_rec_mic = hw_mic_session();
+    return true;
 }
 static void rec_task(void *arg)
 {
@@ -185,7 +188,7 @@ static void rec_task(void *arg)
     s_cap_t0 = esp_timer_get_time();
     while (!s_stop) {
         // pause: hand the mic to someone else (Amber) without closing the file; resume reopens it
-        if (s_pause_req && !s_paused) { hw_mic_close(); s_level = 0; s_paused = true; }
+        if (s_pause_req && !s_paused) { hw_mic_close_session(s_rec_mic); s_level = 0; s_paused = true; }
         if (s_paused) {
             if (!s_pause_req && mic_open_for_rec()) { s_paused = false; rec_mark(); }   // a bookmark where it resumed
             else { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
@@ -200,7 +203,7 @@ static void rec_task(void *arg)
         s_level = lv < 0 ? 0 : (lv > 100 ? 100 : lv);
         if (xStreamBufferSend(s_sb, pcm, n * 2, 0) != (size_t)(n * 2)) s_dropped += n;
     }
-    if (!s_paused) hw_mic_close();
+    if (!s_paused) hw_mic_close_session(s_rec_mic);
     s_paused = s_pause_req = false;
     s_level = 0;
     s_cap_done = true;
@@ -235,7 +238,7 @@ bool rec_start(rec_mode_t m)
     snprintf(s_file, sizeof(s_file), "%s/%c_%04d%02d%02d_%02d%02d%02d.wav", dir, m == REC_MUSIC ? 'G' : 'M',
              t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
     s_sb = xStreamBufferCreateWithCaps(SBUF, 1, MALLOC_CAP_SPIRAM);
-    if (!s_sb) { hw_mic_close(); return false; }
+    if (!s_sb) { hw_mic_close_session(s_rec_mic); return false; }
     s_mode = m;
     s_stop = false; s_cap_done = false; s_done = false; s_active = true;
     s_frames = 0; s_dropped = 0; s_nmarks = 0;

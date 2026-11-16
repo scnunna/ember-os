@@ -51,6 +51,7 @@ fun SettingsScreen(go: (Screen) -> Unit, onBack: () -> Unit) {
             Button(enabled = AppGraph.gateway.installed(), onClick = { AppGraph.gateway.openApprovals(ctx) }) { Text("Open Ember Gateway (approve / log)") }
         }
         LifeOsCard()
+        AmberVoiceCard()
         InfoCard("Recordings (privacy)") {
             Text("Raw audio of a meeting is the most sensitive thing here.")
             Row { RadioButton(selected = keepDays == 0, onClick = { keepDays = 0; AppGraph.prefs.keepAudioDays = 0 }); Text("Delete the recording after it is turned into text (recommended)", Modifier.padding(top = 12.dp)) }
@@ -165,5 +166,52 @@ private fun LifeOsCard() {
                 FilterChip(selected = snooze == v, onClick = { snooze = v; AppGraph.prefs.ciSnooze = v; pushCfg() }, label = { Text("$v min") })
             }
         }
+    }
+}
+
+@Composable
+private fun AmberVoiceCard() {
+    val scope = rememberCoroutineScope()
+    var on by remember { mutableStateOf(AppGraph.prefs.speakAmber) }
+    var rate by remember { mutableFloatStateOf(AppGraph.prefs.speechRate) }
+    var vol by remember { mutableFloatStateOf(AppGraph.prefs.watchVol.toFloat()) }
+    var voices by remember { mutableStateOf<List<Pair<com.nunna.embercompanion.protocol.VoiceInfo, String>>?>(null) }
+    var current by remember { mutableStateOf<String?>(null) }
+    val testText = "Hi, this is Amber. This is how I sound on your watch."
+    LaunchedEffect(Unit) {
+        voices = AppGraph.amberVoice.voices()
+        current = AppGraph.amberVoice.currentName()
+    }
+    InfoCard("Amber's voice") {
+        Text("Amber's replies can be spoken on the watch speaker. The voice is made on this phone with an offline Android voice, so nothing is sent anywhere.")
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Switch(checked = on, onCheckedChange = { on = it; AppGraph.prefs.speakAmber = it })
+            Spacer(Modifier.width(8.dp)); Text("Speak replies on the watch")
+        }
+        val vs = voices
+        when {
+            vs == null -> Text("Looking for installed voices...", style = MaterialTheme.typography.bodySmall)
+            vs.isEmpty() -> Text("No offline English voice is installed. Add one in Android Settings > Text-to-speech > Google > Install voice data.", style = MaterialTheme.typography.bodySmall)
+            else -> {
+                Text("Voice", style = MaterialTheme.typography.titleSmall)
+                vs.forEach { (v, label) ->
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        RadioButton(selected = current == v.name, onClick = { current = v.name; AppGraph.prefs.voiceName = v.name })
+                        Text(label + if (current == v.name) " (current)" else "")
+                    }
+                }
+            }
+        }
+        Text("Speed: " + "%.2f".format(rate) + "x")
+        Slider(value = rate, onValueChange = { rate = (Math.round(it * 20f) / 20f) }, onValueChangeFinished = { AppGraph.prefs.speechRate = rate }, valueRange = 0.8f..1.3f)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { AppGraph.prefs.speechRate = rate; scope.launch { AppGraph.amberVoice.speakLocal(testText) } }) { Text("Preview on phone") }
+            Button(enabled = AppGraph.connected(), onClick = { AppGraph.prefs.speechRate = rate; AppGraph.speak.enqueue("test", testText, force = true) }) { Text("Play on watch") }
+        }
+        Text("Watch volume: ${vol.toInt()}")
+        Slider(value = vol, onValueChange = { vol = it }, onValueChangeFinished = {
+            AppGraph.prefs.watchVol = vol.toInt(); AppGraph.link.send(com.nunna.embercompanion.protocol.Message.SpkCfg(vol.toInt()))
+        }, valueRange = 0f..100f)
+        Text("If the watch does not speak, check that Settings > Speak Amber replies is on there and that the watch has firmware 1.5 or newer.", style = MaterialTheme.typography.bodySmall)
     }
 }

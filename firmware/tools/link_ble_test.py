@@ -127,7 +127,7 @@ async def attack_unpaired(dev, what):
 
 
 async def main():
-    s = ember.open_watch(ember.find_port([]))
+    s = ember.open_watch(ember.find_port([]), radio=True)   # this test needs the Bluetooth link (laptop radio)
     dev = await BleakScanner.find_device_by_filter(lambda d, ad: (d.name or '').startswith(('EmberWatchOS', 'Watch-')), timeout=15)
     check(dev is not None, 'watch found by Bluetooth scan (name EmberWatchOS)', dev.name if dev else 'not found')
     if not dev: return

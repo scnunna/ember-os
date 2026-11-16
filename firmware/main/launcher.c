@@ -9,6 +9,7 @@
 #include "app.h"
 #include "diag.h"
 #include "hw.h"
+#include "speak.h"
 
 static lv_obj_t *s_face, *s_grid, *s_app;
 static int s_cur = -1;
@@ -23,7 +24,7 @@ static void app_stop_idx(int i) { if (i >= APP_COUNT) script_stop(); else if (i 
 
 static int bright(void) { return hw_pref_get("bright", 60); }
 static int timeout_s(void) { return hw_pref_get("timeout", 10); }   // full brightness (owner 2026-11-15: 10 s)
-static int dimfor_s(void) { return hw_pref_get("dimfor", 300); }     // then dimmed for 5 min, then off
+static int dimfor_s(void) { return hw_pref_get("dimfor", 5); }       // then dimmed 5 s, then off (owner: 10 s + 5 s)
 
 static void screen_set(bool on)
 {
@@ -359,6 +360,9 @@ void launcher_start(void)
         hw_pref_set("bright", 60); hw_pref_set("raise", 0); hw_pref_set("timeout", 10); hw_pref_set("pwr_v2", 1);
         extern volatile bool s_raise_on; s_raise_on = false;
     }
+    if (!hw_pref_get("pwr_v3", 0)) {                 // 2026-11-16: dim 5 s (not 5 min)
+        hw_pref_set("dimfor", 5); hw_pref_set("pwr_v3", 1);
+    }
     bsp_display_brightness_set(bright());      // under the LVGL lock: never race a screen flush on the SPI bus
     // woken from deep sleep by wrist motion or the check-in timer: only to count steps / ask, so stay dark
     int wc = power_wake_cause();
@@ -369,6 +373,7 @@ void launcher_start(void)
 // BOOT-button actions (called from buttons.c task)
 void launcher_btn_short(void)
 {
+    if (speak_active()) { speak_stop(); return; }    // a press stops Amber's voice
     bsp_display_lock(0);
     if (!s_on || s_dim) launcher_wake();
     else if (s_state == ST_FACE) screen_set(false);     // on the watch face, the button = screen off

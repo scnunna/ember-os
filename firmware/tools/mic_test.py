@@ -21,7 +21,7 @@ def ask(line, prefix='CMD', timeout=6):
     t0 = time.time()
     while time.time() - t0 < timeout:
         l = s.readline().decode(errors='replace').strip()
-        if 'Guru Meditation' in l or 'rst:0x' in l: print('!! CRASH', l); res.append(False)
+        if 'Guru Meditation' in l or 'rst:0x' in l or 'Backtrace' in l or 'abort()' in l: print('!! CRASH', l[:400]); res.append(False)
         if l.startswith(prefix): return l
     return ''
 

@@ -115,3 +115,18 @@ That makes 133 bytes per block, 256 samples, 16 ms at 16 kHz, so 62.5 blocks/s a
 ## v1.4 (2026-11-15): Amber check-ins and voice
 New messages `sched`, `sched_ok`, `ci`, `ci_ack`, `ci_cfg`, `amber_heard`, `amber`, the `ptt` side `amber` (with optional
 `ctx`) and the `hello` fields `sd`/`ciq` are specified in `docs/LIFE_MANAGER_PLAN.md` (Part C). Firmware 1.2.
+
+## v1.5 (2026-11-16): Amber speaks on the watch speaker
+- **New characteristic SPK** `eb3f0005-6d62-4f53-8a1e-656d6265720a`, phone -> watch, **Write Without Response** (and Write),
+  encrypted + authenticated like the others. Each write is **one 133-byte block in the AUDIO format** (byte 0 seq, bytes 1-2
+  predictor int16 LE, byte 3 step index, byte 4 reserved, 128 bytes = 256 samples, low nibble first), 16 kHz mono.
+- Flow (phone -> watch on CMD unless noted):
+  1. `{"t":"say","id":"<amber msg id or 'test'>","n":<blocks that will follow>}`
+  2. watch -> `{"t":"say_ready","id"}` when the speaker is open (it switches the link to the fast rhythm), or
+     `{"t":"say_skip","id","why":"off|recording|busy"}` (speech off in Settings, a recording is running, mic/speaker busy).
+  3. phone writes the blocks on SPK at about real-time pace (62.5 blocks/s; it may run up to 1 s ahead: the watch buffers 2 s)
+  4. `{"t":"say_end","id"}` after the last block. The watch plays out what it has, closes the speaker and sends
+     `{"t":"say_done","id","played":<blocks>,"lost":<missing seq>}`.
+  5. Either side may stop early: phone `{"t":"say_stop","id"}`; on the watch a BOOT press stops the voice.
+- The watch never listens while it speaks (and speaking never starts while the mic is in use).
+- `{"t":"spk_cfg","vol":0-100}` sets the volume (watch pref, default 70). Settings on the watch: "Speak Amber replies".

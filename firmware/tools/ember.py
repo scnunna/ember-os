@@ -24,7 +24,27 @@ def find_port(argv):
     sys.exit('watch not found on USB (no Espressif VID 303A port)')
 
 
-def open_watch(port):
+def radio_off(s):
+    """Takes the owner's phone off the watch for the whole test: no test may ring his phone, send audio to Amber or
+    write check-ins to his Life OS (2026-11-15/16 incidents). The radio comes back at exit, even after a failure."""
+    import atexit
+    s.write(b'radio off\n')
+    t0 = time.time()
+    while time.time() - t0 < 4:
+        l = s.readline().decode(errors='replace')
+        if l.startswith('CMD radio off'):
+            if 'link_ready=0' not in l: raise SystemExit('ABORT: the phone could not be taken off the link: ' + l.strip())
+            break
+    else:
+        raise SystemExit('ABORT: the watch did not confirm "radio off" (old firmware?) - refusing to run with the phone linked')
+    if not getattr(s, '_radio_atexit', False):
+        atexit.register(lambda: (s.write(b'radio on\n'), time.sleep(0.3)) if s.is_open else None)
+        s._radio_atexit = True
+
+
+def open_watch(port, radio=False):
+    """Opens the USB shell. radio=False (default) switches the watch's Bluetooth link off for the test (see radio_off);
+    only a test that really needs the radio (link_ble_test.py) passes radio=True."""
     # Set DTR/RTS low BEFORE opening: pyserial's default open raises them for a moment, which resets the watch.
     s = serial.Serial()
     s.port, s.baudrate, s.timeout = port, 115200, 0.2
@@ -33,6 +53,12 @@ def open_watch(port):
     s.open()
     time.sleep(0.3)
     s.reset_input_buffer()
+    if not radio:
+        for _ in range(10):                      # the shell may still be booting
+            s.write(b'pwr\n'); time.sleep(0.4)
+            if b'CMD pwr' in s.read(s.in_waiting or 1): break
+        s.reset_input_buffer()
+        radio_off(s)
     return s
 
 

@@ -4,6 +4,7 @@
 //   nav N                 random navigation stress test (N steps)
 //   status                clock, battery, heap
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 #include <stdlib.h>
 #include "freertos/FreeRTOS.h"
@@ -17,6 +18,7 @@
 #include "app.h"
 #include "sched.h"
 #include "adpcm.h"
+#include "speak.h"
 #include "diag.h"
 #include "hw.h"
 #include "link.h"
@@ -445,7 +447,32 @@ static void run_line(char *l)
     else if (sscanf(l, "diaglog %d", &n) == 1) diag_dump(n);           // last n KB of /flash/diag.log
     else if (!strncmp(l, "diagclear", 9)) { diag_clear(); printf("CMD diagclear\n"); }
     else if (!strncmp(l, "diagnote ", 9)) { diag_event("NOTE %s", l + 9); diag_flush(); printf("CMD diagnote\n"); }
-    else if (!strncmp(l, "imatest", 7)) {                       // compressed-recording encoder vs tools/ima_wav_check.py
+    else if (!strncmp(l, "saytest", 7)) {                       // plays a 1.5 s chime through the v1.5 voice path
+        const int nb = 94;                                      // 94 x 16 ms = 1.5 s
+        uint8_t *blks = heap_caps_malloc(nb * ADPCM_BLOCK_BYTES, MALLOC_CAP_SPIRAM);
+        int16_t *pcm = heap_caps_malloc(ADPCM_BLOCK_SAMPLES * 2, MALLOC_CAP_SPIRAM), *dec = heap_caps_malloc(ADPCM_BLOCK_SAMPLES * 2, MALLOC_CAP_SPIRAM);
+        int idx = 0; double sig = 0, err = 0;
+        for (int b = 0; b < nb && blks && pcm && dec; b++) {
+            for (int i = 0; i < ADPCM_BLOCK_SAMPLES; i++) {
+                int t = b * ADPCM_BLOCK_SAMPLES + i;
+                float f = t < 8000 ? 660.0f : 880.0f, env = (t % 8000) < 400 ? (t % 8000) / 400.0f : 1.0f;
+                pcm[i] = (int16_t)(9000 * env * sinf(2 * 3.14159265f * f * t / 16000.0f));
+            }
+            adpcm_encode_block(pcm, (uint8_t)b, &idx, blks + b * ADPCM_BLOCK_BYTES);
+            adpcm_decode_block(blks + b * ADPCM_BLOCK_BYTES, dec);
+            for (int i = 0; i < ADPCM_BLOCK_SAMPLES; i++) { sig += (double)pcm[i] * pcm[i]; err += (double)(pcm[i] - dec[i]) * (pcm[i] - dec[i]); }
+        }
+        printf("SAYTEST codec snr=%.1f dB\n", err > 0 ? 10 * log10(sig / err) : 99.0);
+        speak_begin("test", nb);
+        for (int b = 0; b < nb && speak_active(); b++) {        // like the phone: real time, ~1 s ahead
+            speak_feed(blks + b * ADPCM_BLOCK_BYTES, ADPCM_BLOCK_BYTES);
+            if (b > 62) vTaskDelay(pdMS_TO_TICKS(16));
+        }
+        speak_end();
+        for (int i = 0; i < 300 && speak_active(); i++) vTaskDelay(pdMS_TO_TICKS(20));
+        free(blks); free(pcm); free(dec);
+        printf("CMD saytest done active=%d\n", speak_active());
+    } else if (!strncmp(l, "imatest", 7)) {                       // compressed-recording encoder vs tools/ima_wav_check.py
         static int16_t sig[IMA_WAV_BLOCK_SAMPLES * 2]; uint8_t out[IMA_WAV_BLOCK_BYTES]; int idx = 0; uint32_t sum = 0;
         for (int t = 0; t < IMA_WAV_BLOCK_SAMPLES * 2; t++) sig[t] = (int16_t)(((t * 37) % 2001 - 1000) * 13);
         for (int k = 0; k < 2; k++) {

@@ -41,6 +41,13 @@ sealed interface Message {
     data class AmberHeard(val text: String) : Message
     /** v1.4: Amber's reply (max 300 characters). [final] = the real answer (buzz); false = just "Got it." */
     data class Amber(val id: String, val text: String, val final: Boolean) : Message
+    /** v1.5: Amber speaks on the watch speaker. [n] = number of SPK blocks that will follow. */
+    data class Say(val id: String, val n: Int) : Message
+    data class SayEnd(val id: String) : Message
+    /** Either side may send it to stop early. */
+    data class SayStop(val id: String) : Message
+    /** v1.5: watch speaker volume 0..100. */
+    data class SpkCfg(val vol: Int) : Message
 
     // ---- watch -> phone (EVT) ----
     data class Hello(val fw: String, val name: String, val batt: Int, val mv: Int, val usb: Boolean, val steps: Int,
@@ -74,6 +81,13 @@ sealed interface Message {
     data class Ci(val seq: Long, val date: Int, val slot: Int, val at: Long, val ans: String, val ids: List<String>) : Message
     /** v1.4: reply to [Sched]. */
     data class SchedOk(val date: Int, val gen: String, val n: Int) : Message
+
+    /** v1.5: the watch opened the speaker; start streaming. */
+    data class SayReady(val id: String) : Message
+    /** v1.5: the watch will not speak. [why] = off | recording | busy. */
+    data class SaySkip(val id: String, val why: String) : Message
+    /** v1.5: playback finished (or was stopped). [played] blocks played, [lost] missing sequence numbers. */
+    data class SayDone(val id: String, val played: Int, val lost: Int) : Message
 
     /** A `t` value we do not know. Ignored by receivers, kept for logging. */
     data class Unknown(val t: String) : Message
@@ -127,6 +141,13 @@ object MessageCodec {
         is Message.CiCfg -> obj("ci_cfg") { put("on", m.on); put("snooze", m.snooze) }
         is Message.AmberHeard -> obj("amber_heard") { put("text", m.text) }
         is Message.Amber -> obj("amber") { put("id", m.id); put("text", m.text); put("final", m.final) }
+        is Message.Say -> obj("say") { put("id", m.id); put("n", m.n) }
+        is Message.SayEnd -> obj("say_end") { put("id", m.id) }
+        is Message.SayStop -> obj("say_stop") { put("id", m.id) }
+        is Message.SpkCfg -> obj("spk_cfg") { put("vol", m.vol) }
+        is Message.SayReady -> obj("say_ready") { put("id", m.id) }
+        is Message.SaySkip -> obj("say_skip") { put("id", m.id); put("why", m.why) }
+        is Message.SayDone -> obj("say_done") { put("id", m.id); put("played", m.played); put("lost", m.lost) }
         is Message.Ci -> obj("ci") {
             put("seq", m.seq); put("date", m.date); put("slot", m.slot); put("at", m.at); put("ans", m.ans)
             put("ids", strs(m.ids))
@@ -202,6 +223,13 @@ object MessageCodec {
                 "ci_cfg" -> Message.CiCfg(o.bool("on"), o.int("snooze"))
                 "amber_heard" -> Message.AmberHeard(o.str("text") ?: "")
                 "amber" -> Message.Amber(o.str("id") ?: "", o.str("text") ?: "", o.bool("final"))
+                "say" -> Message.Say(o.str("id") ?: "", o.int("n"))
+                "say_end" -> Message.SayEnd(o.str("id") ?: "")
+                "say_stop" -> Message.SayStop(o.str("id") ?: "")
+                "spk_cfg" -> Message.SpkCfg(o.int("vol"))
+                "say_ready" -> Message.SayReady(o.str("id") ?: "")
+                "say_skip" -> Message.SaySkip(o.str("id") ?: "", o.str("why") ?: "")
+                "say_done" -> Message.SayDone(o.str("id") ?: "", o.int("played"), o.int("lost"))
                 "ci" -> Message.Ci(o.long("seq"), o.int("date"), o.int("slot"), o.long("at"), o.str("ans") ?: "", o.strList("ids"))
                 "sched_ok" -> Message.SchedOk(o.int("date"), o.str("gen") ?: "", o.int("n"))
                 "steps" -> Message.Steps(o.arr("days").map { Message.StepDay(it.int("date"), it.int("steps")) })

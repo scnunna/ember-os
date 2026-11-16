@@ -8,3 +8,4 @@ int adpcm_encode_block(const int16_t *samples, uint8_t seq, int *index, uint8_t 
 #define IMA_WAV_BLOCK_SAMPLES 505
 #define IMA_WAV_BLOCK_BYTES   256
 int ima_wav_encode_block(const int16_t *samples, int nsamp, int *index, uint8_t *out);
+void adpcm_decode_block(const uint8_t *in133, int16_t *out256);   // AUDIO block -> 256 samples

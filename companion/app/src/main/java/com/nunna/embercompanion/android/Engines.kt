@@ -173,32 +173,50 @@ class LlmSummarizer(private val llm: LlmRuntime, private val fallback: Summarize
 
 // ------------------------------------------------------------------ Find phone + music keys
 
+/**
+ * "Find phone" ring. Bug fixed 2026-11-16: watch messages are handled on parallel coroutines, so two quick "ring on"
+ * messages could create two looping ringtones while only one was remembered -> Stop silenced one and the other rang
+ * until the phone restarted. Now: start/stop are synchronized, every ringtone ever started is stopped by stop(),
+ * and it always stops by itself after [MAX_MS] (and when the watch disconnects, see AppGraph).
+ */
 class Ringer(private val ctx: Context) {
-    private var ringtone: Ringtone? = null
+    private val playing = ArrayList<Ringtone>()
     private var oldVolume = -1
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val autoStop = Runnable { stop(); onAutoStop?.invoke() }
+    var onAutoStop: (() -> Unit)? = null
 
-    val ringing get() = ringtone != null
+    val ringing get() = synchronized(this) { playing.isNotEmpty() }
 
+    @Synchronized
     fun start() {
-        if (ringtone != null) return
+        if (playing.isNotEmpty()) return
         val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         oldVolume = am.getStreamVolume(AudioManager.STREAM_ALARM)
         am.setStreamVolume(AudioManager.STREAM_ALARM, am.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0)
         val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM) ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-        ringtone = RingtoneManager.getRingtone(ctx, uri)?.apply {
+        RingtoneManager.getRingtone(ctx, uri)?.apply {
             audioAttributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
             isLooping = true
             play()
+            playing += this
         }
+        handler.removeCallbacks(autoStop)
+        handler.postDelayed(autoStop, MAX_MS)
     }
 
+    @Synchronized
     fun stop() {
-        ringtone?.stop(); ringtone = null
+        handler.removeCallbacks(autoStop)
+        playing.forEach { runCatching { it.stop() } }
+        playing.clear()
         if (oldVolume >= 0) {
             (ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager).setStreamVolume(AudioManager.STREAM_ALARM, oldVolume, 0)
             oldVolume = -1
         }
     }
+
+    companion object { const val MAX_MS = 60_000L }
 }
 
 object Media {

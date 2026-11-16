@@ -35,6 +35,8 @@ class EmberGatt(private val ctx: Context, private val link: () -> LinkController
         val CMD: UUID = UUID.fromString("eb3f0002-6d62-4f53-8a1e-656d6265720a")
         val EVT: UUID = UUID.fromString("eb3f0003-6d62-4f53-8a1e-656d6265720a")
         val AUDIO: UUID = UUID.fromString("eb3f0004-6d62-4f53-8a1e-656d6265720a")
+        /** v1.5: phone -> watch speech blocks, Write Without Response. Missing on old firmware (speaking is then unavailable). */
+        val SPK: UUID = UUID.fromString("eb3f0005-6d62-4f53-8a1e-656d6265720a")
         val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val TAG = "EmberGatt"
         val BACKOFF_MS = longArrayOf(1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 60_000)
@@ -43,6 +45,10 @@ class EmberGatt(private val ctx: Context, private val link: () -> LinkController
     private val main = Handler(Looper.getMainLooper())
     private var gatt: BluetoothGatt? = null
     private var cmd: BluetoothGattCharacteristic? = null
+    private var spk: BluetoothGattCharacteristic? = null
+    private val spkQueue = ArrayDeque<ByteArray>()
+    private val spkCount = java.util.concurrent.atomic.AtomicInteger(0)
+    private var writingSpk = false
     private var address: String? = null
     private var wanted = false
     private var userPairing = false
@@ -175,6 +181,7 @@ class EmberGatt(private val ctx: Context, private val link: () -> LinkController
 
     private fun closeGatt() {
         queue.clear(); writing = false; cmd = null
+        spkCount.addAndGet(-spkQueue.size); spkQueue.clear(); writingSpk = false; spk = null
         gatt?.let { runCatching { it.disconnect() }; runCatching { it.close() } }
         gatt = null
     }
@@ -186,6 +193,31 @@ class EmberGatt(private val ctx: Context, private val link: () -> LinkController
         main.postDelayed({ connectNow() }, delay)
     }
 
+    /** True when connected, bonded and the watch has the SPK characteristic. */
+    val spkAvailable: Boolean get() = spk != null && gatt != null && _bond.value == Bond.BONDED
+
+    /** Blocks queued for SPK and not yet handed to the Bluetooth stack. */
+    fun spkQueued(): Int = spkCount.get()
+
+    /** Queues one speech block (Write Without Response). Never blocks the CMD queue: CMD writes go first. */
+    fun writeSpk(block: ByteArray): Boolean {
+        if (!spkAvailable) return false
+        spkCount.incrementAndGet()
+        main.post {
+            if (spk == null || !LinkGuard.mayTalk(_bond.value, gatt != null)) { spkCount.decrementAndGet(); return@post }
+            spkQueue.addLast(block)
+            pump()
+        }
+        return true
+    }
+
+    /** Fast connection interval while streaming speech, balanced afterwards. */
+    fun fastLink(on: Boolean) {
+        main.post {
+            runCatching { gatt?.requestConnectionPriority(if (on) BluetoothGatt.CONNECTION_PRIORITY_HIGH else BluetoothGatt.CONNECTION_PRIORITY_BALANCED) }
+        }
+    }
+
     override fun write(packets: List<ByteArray>) {
         main.post {
             if (!LinkGuard.mayTalk(_bond.value, gatt != null)) return@post // never send before bonded
@@ -194,23 +226,37 @@ class EmberGatt(private val ctx: Context, private val link: () -> LinkController
         }
     }
 
+    /** One GATT write at a time. CMD packets always go before SPK blocks, so a speech stream cannot starve commands. */
     private fun pump() {
-        if (writing) return
+        if (writing || writingSpk) return
         val g = gatt ?: return
-        val c = cmd ?: return
-        val next = queue.removeFirstOrNull() ?: return
-        writing = true
-        val ok = if (Build.VERSION.SDK_INT >= 33) {
-            g.writeCharacteristic(c, next, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
+        val cmdPacket = queue.removeFirstOrNull()
+        if (cmdPacket != null) {
+            val c = cmd ?: return
+            writing = true
+            if (!rawWrite(g, c, cmdPacket, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)) { writing = false; Log.w(TAG, "write rejected") }
+            return
+        }
+        val c = spk ?: return
+        val block = spkQueue.removeFirstOrNull() ?: return
+        spkCount.decrementAndGet()
+        writingSpk = true
+        if (!rawWrite(g, c, block, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)) {
+            writingSpk = false; spkQueue.addFirst(block); spkCount.incrementAndGet() // busy: retry shortly, keep order
+            main.postDelayed({ pump() }, 5)
+        }
+    }
+
+    private fun rawWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, data: ByteArray, type: Int): Boolean =
+        if (Build.VERSION.SDK_INT >= 33) {
+            g.writeCharacteristic(c, data, type) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION") run {
-                c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                c.value = next
+                c.writeType = type
+                c.value = data
                 g.writeCharacteristic(c)
             }
         }
-        if (!ok) { writing = false; Log.w(TAG, "write rejected") }
-    }
 
     /** The watch said "insufficient authentication/encryption". With a bond that means it forgot us; without one, Android starts pairing. */
     private fun onAuthError() {
@@ -295,6 +341,7 @@ class EmberGatt(private val ctx: Context, private val link: () -> LinkController
                 if (g !== gatt) return@post
                 val svc = g.getService(SERVICE)
                 cmd = svc?.getCharacteristic(CMD)
+                spk = svc?.getCharacteristic(SPK)   // null on firmware older than v1.5
                 if (status != BluetoothGatt.GATT_SUCCESS || svc == null || cmd == null) {
                     lastError = Errors.BT_NO_WATCH
                     closeGatt(); scheduleReconnect(); return@post
@@ -315,7 +362,7 @@ class EmberGatt(private val ctx: Context, private val link: () -> LinkController
 
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
             main.post {
-                writing = false
+                if (c.uuid == SPK) writingSpk = false else writing = false
                 if (LinkGuard.isAuthError(status)) { queue.clear(); onAuthError(); return@post }
                 if (status != BluetoothGatt.GATT_SUCCESS) Log.w(TAG, "write status $status")
                 pump()

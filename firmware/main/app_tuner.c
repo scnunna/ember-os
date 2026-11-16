@@ -72,6 +72,7 @@ static void tuner_task(void *arg)
     EXT_RAM_BSS_ATTR static int16_t ring[BUF];
     int filled = 0;
     if (!hw_mic_open_as(RATE, 24.0f, "Tuner", "listening for notes")) { s_task = NULL; s_exit = true; vTaskDelete(NULL); }
+    uint32_t mic = hw_mic_session();
     float hist[5] = {0};
     int hi = 0;
     while (s_run) {
@@ -95,7 +96,7 @@ static void tuner_task(void *arg)
             s_freq = s[2] > 0 ? s[2] : f;     // median of last 5
         } else s_freq = 0;
     }
-    hw_mic_close();
+    hw_mic_close_session(mic);
     s_task = NULL;
     s_exit = true;
     vTaskDelete(NULL);

@@ -8,10 +8,9 @@
 static lv_obj_t *s_status, *s_time_lbl, *s_tog[3];
 static lv_timer_t *s_tm;
 
-// three on/off toggles: power saving, vibration, raise-to-wake
-extern volatile bool s_raise_on;
-static const char *TOG_KEY[3] = {"lp", "haptic", "raise"};
-static const char *TOG_NAME[3] = {"Power save", "Vibrate", "Raise wake"};
+// three on/off toggles: power saving, vibration, Amber's voice (raise-to-wake was removed 2026-11-15: no motion wake)
+static const char *TOG_KEY[3] = {"lp", "haptic", "speak"};
+static const char *TOG_NAME[3] = {"Power save", "Vibrate", "Amber voice"};
 static const char *tog_text(int i)
 {
     static char b[3][32];
@@ -23,7 +22,6 @@ static void tog_cb(lv_event_t *e)
     int i = (int)(intptr_t)ui_ud(e);
     int v = !hw_pref_get(TOG_KEY[i], 1);
     hw_pref_set(TOG_KEY[i], v);
-    if (i == 2) s_raise_on = v;
     if (i == 1 && v) hw_buzz(80);
     lv_label_set_text(lv_obj_get_child(s_tog[i], 0), tog_text(i));
 }

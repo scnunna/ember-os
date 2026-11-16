@@ -5,6 +5,8 @@
 // double-click window is in progress, then sleeps again. The same pin wakes the chip from light sleep.
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
+#include "esp_heap_caps.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "esp_sleep.h"
@@ -61,7 +63,8 @@ static void pwr_task(void *arg)
 
 void buttons_start(void)
 {
-    xTaskCreate(pwr_task, "pwrkey", 3072, NULL, 4, NULL);
+    // stack in PSRAM: this task never writes flash (internal RAM is what the Wi-Fi hotspot needs)
+    xTaskCreateWithCaps(pwr_task, "pwrkey", 3072, NULL, 4, NULL, MALLOC_CAP_SPIRAM);
     gpio_config_t io = {.pin_bit_mask = 1ULL << 0, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE};
     gpio_config(&io);
     xTaskCreate(btn_task, "btn", 4096, NULL, 4, &s_task);

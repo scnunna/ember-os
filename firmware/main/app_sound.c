@@ -31,6 +31,7 @@ static void snd_task(void *arg)
         dsps_wind_hann_f32(wind, N);
     }
     if (!hw_mic_open_as(RATE, 24.0f, "Sound", "measuring loudness")) { s_run = false; s_exit = true; vTaskDelete(NULL); }
+    uint32_t mic = hw_mic_session();
     while (s_run) {
         if (hw_mic_read_mono(pcm, N) != N) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
         double e = 0;
@@ -56,7 +57,7 @@ static void snd_task(void *arg)
             }
         }
     }
-    hw_mic_close();
+    hw_mic_close_session(mic);
     s_exit = true;
     vTaskDelete(NULL);
 }

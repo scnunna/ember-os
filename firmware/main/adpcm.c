@@ -70,3 +70,21 @@ int ima_wav_encode_block(const int16_t *s, int nsamp, int *index, uint8_t *out)
     *index = idx;
     return 4 + (nsamp - 1) / 2;
 }
+
+// Decodes one AUDIO-format block (133 bytes) into 256 samples (inverse of adpcm_encode_block). Used for the voice the
+// phone streams to the watch speaker (Ember Link v1.5).
+void adpcm_decode_block(const uint8_t *in, int16_t *out)
+{
+    int pred = (int16_t)(in[1] | (in[2] << 8)), idx = clampi(in[3], 0, 88);
+    const uint8_t *d = in + 5;
+    for (int i = 0; i < ADPCM_BLOCK_SAMPLES; i++) {
+        int nib = (i & 1) ? (d[i >> 1] >> 4) : (d[i >> 1] & 0x0F);
+        int step = STEP[idx], dq = step >> 3;
+        if (nib & 1) dq += step >> 2;
+        if (nib & 2) dq += step >> 1;
+        if (nib & 4) dq += step;
+        pred = clampi((nib & 8) ? pred - dq : pred + dq, -32768, 32767);
+        idx = clampi(idx + IDX[nib], 0, 88);
+        out[i] = (int16_t)pred;
+    }
+}

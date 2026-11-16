@@ -5,6 +5,8 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
+#include "esp_heap_caps.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "nvs_flash.h"
@@ -251,6 +253,8 @@ static int tx_access(uint16_t ch, uint16_t ah, struct ble_gatt_access_ctxt *ctxt
           .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_WRITE_ENC | BLE_GATT_CHR_F_WRITE_AUTHEN}, \
          {.uuid = &LINK_UUID_EVT.u, .access_cb = link_noop_access, .val_handle = &link_evt_handle, .flags = BLE_GATT_CHR_F_NOTIFY}, \
          {.uuid = &LINK_UUID_AUDIO.u, .access_cb = link_noop_access, .val_handle = &link_audio_handle, .flags = BLE_GATT_CHR_F_NOTIFY}, \
+         {.uuid = &LINK_UUID_SPK.u, .access_cb = link_spk_access,                                                   \
+          .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_WRITE_ENC | BLE_GATT_CHR_F_WRITE_AUTHEN}, \
          {0}}}
 static const struct ble_gatt_svc_def GATT_WITH_CHRONOS[] = {
     {.type = BLE_GATT_SVC_TYPE_PRIMARY,                       // Chronos (no authentication: off by default, S2)
@@ -427,7 +431,8 @@ void ble_start(void)
     (void)mac;
     s_enabled = hw_pref_get("ble", 1);
     s_txq = xQueueCreate(16, sizeof(txmsg_t));
-    xTaskCreate(tx_task, "ble_tx", 3072, NULL, 4, NULL);
+    // stack in PSRAM: this task never writes flash (internal RAM is what the Wi-Fi hotspot needs)
+    xTaskCreateWithCaps(tx_task, "ble_tx", 3072, NULL, 4, NULL, MALLOC_CAP_SPIRAM);
     link_start();
     if (nimble_port_init() != ESP_OK) { ESP_LOGE(TAG, "nimble init failed"); return; }
     ble_hs_cfg.sync_cb = on_sync;

@@ -9,6 +9,8 @@ s.dtr = False; s.rts = False
 time.sleep(4.5)            # opening the port resets the board; let it finish booting
 errors = []
 boot = s.read(s.in_waiting).decode(errors='replace')
+import os as _os; sys.path.insert(0, _os.path.dirname(__file__)); import ember
+ember.radio_off(s)            # taps every button: the owner's phone must not be on the link
 for l in boot.splitlines():
     if l.startswith(('E (','W (')) and 'sdmmc' not in l and 'vfs_fat' not in l and 'i2c.master' not in l: errors.append(l[:160])
 

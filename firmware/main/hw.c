@@ -434,6 +434,10 @@ static uint32_t s_mic_rate;
 
 // ---- mic: single owner, but a 16 kHz owner can share its stream with one listener (the "tap") ----
 static char s_mic_who[16], s_mic_what[40];
+static uint32_t s_mic_gen;                      // session ticket: only the session that opened the mic may close it
+uint32_t hw_mic_session(void) { return s_mic_open ? s_mic_gen : 0; }
+void hw_mic_close(void);
+void hw_mic_close_session(uint32_t gen) { if (gen && s_mic_open && gen == s_mic_gen) hw_mic_close(); }
 static int64_t s_mic_since;
 #include "freertos/stream_buffer.h"
 static StreamBufferHandle_t s_tap;              // copy of every frame the owner reads (Amber while a meeting records)
@@ -446,6 +450,7 @@ bool hw_mic_open_as(uint32_t rate, float gain_db, const char *who, const char *w
     esp_codec_dev_set_in_gain(s_mic, gain_db);
     s_mic_open = true;
     s_mic_rate = rate;
+    s_mic_gen++;
     snprintf(s_mic_who, sizeof(s_mic_who), "%s", who ? who : "an app");
     snprintf(s_mic_what, sizeof(s_mic_what), "%s", what ? what : "");
     s_mic_since = esp_timer_get_time();

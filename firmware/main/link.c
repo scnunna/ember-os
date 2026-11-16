@@ -8,6 +8,8 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
+#include "esp_heap_caps.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "esp_log.h"
@@ -26,6 +28,7 @@
 #include "practice.h"
 #include "devices.h"
 #include "sched.h"
+#include "speak.h"
 
 static const char *TAG = "link";
 #define FW_VERSION "1.2"
@@ -38,6 +41,7 @@ const ble_uuid128_t LINK_UUID_SVC = BLE_UUID128_INIT(LUUID(0x01));
 const ble_uuid128_t LINK_UUID_CMD = BLE_UUID128_INIT(LUUID(0x02));
 const ble_uuid128_t LINK_UUID_EVT = BLE_UUID128_INIT(LUUID(0x03));
 const ble_uuid128_t LINK_UUID_AUDIO = BLE_UUID128_INIT(LUUID(0x04));
+const ble_uuid128_t LINK_UUID_SPK = BLE_UUID128_INIT(LUUID(0x05));   // v1.5: voice blocks phone -> watch speaker
 uint16_t link_evt_handle, link_audio_handle;
 
 static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
@@ -81,6 +85,16 @@ int link_cmd_access(uint16_t ch, uint16_t ah, struct ble_gatt_access_ctxt *ctxt,
     if (ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &len) == 0) rx_packet(buf, len);
     return 0;
 }
+// v1.5 SPK: one 133-byte voice block per write (only on the secure link)
+int link_spk_access(uint16_t ch, uint16_t ah, struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return 0;
+    if (!s_secure) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+    uint8_t buf[ADPCM_BLOCK_BYTES + 8];
+    uint16_t len = 0;
+    if (ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &len) == 0) speak_feed(buf, len);
+    return 0;
+}
 int link_noop_access(uint16_t ch, uint16_t ah, struct ble_gatt_access_ctxt *ctxt, void *arg) { return 0; }
 
 void link_inject_untrusted(const char *json)   // test hook: treated exactly like a message from the radio
@@ -112,6 +126,7 @@ static void send_obj(cJSON *o)
     usj_end_packet();
     if (!link_ready() || xQueueSend(s_txq, &s, 0) != pdTRUE) cJSON_free(s);
 }
+void link_send_json(struct cJSON *o) { send_obj(o); }
 static bool notify_retry(uint16_t handle, const uint8_t *d, int n)
 {
     for (int tries = 0; tries < 40; tries++) {
@@ -352,6 +367,7 @@ void link_tr_state(char *me, char *them, char *src, size_t srcn, char *dst, size
 static volatile bool s_ptt, s_ptt_task;
 static char s_ptt_side[8] = "me";
 static char s_ptt_ctx[128];
+static volatile uint32_t s_ptt_mic;              // mic session of this push-to-talk
 static volatile bool s_ptt_tap;                  // sharing a 16 kHz meeting recording's mic instead of owning it
 static volatile int s_ptt_err;                   // why the last start failed: LINK_PTT_*
 bool link_ptt_active(void) { return s_ptt; }
@@ -386,7 +402,7 @@ static void ptt_task(void *a)
         else vTaskDelay(pdMS_TO_TICKS(10));
     }
     ble_link_slow_later(3000);
-    if (s_ptt_tap) hw_mic_tap_close(); else hw_mic_close();
+    if (s_ptt_tap) hw_mic_tap_close(); else hw_mic_close_session(s_ptt_mic);
     s_ptt_tap = false;
     s_ptt = false;
     cJSON *o = cJSON_CreateObject();
@@ -403,6 +419,7 @@ bool link_ptt_start_ex(const char *side, const char *ctx_json)
     // the mic is checked first, so "mic in use" is reported (and can be solved) even without the phone
     bool amber = !strcmp(side, "amber");
     bool own = hw_mic_open_as(16000, 30.0f, amber ? "Amber" : "Translate", amber ? "listening to you" : "push-to-talk");
+    s_ptt_mic = own ? hw_mic_session() : 0;
     bool tap = false;
     if (!own) {
         // a meeting recording (16 kHz) keeps going: Amber gets a copy of the same audio, and the moment is bookmarked
@@ -410,7 +427,7 @@ bool link_ptt_start_ex(const char *side, const char *ctx_json)
         else { s_ptt_err = LINK_PTT_MIC_BUSY; return false; }
     }
     if (!link_ready() || ble_att_mtu(s_conn) < ADPCM_BLOCK_BYTES + 3) {
-        if (tap) hw_mic_tap_close(); else hw_mic_close();
+        if (tap) hw_mic_tap_close(); else hw_mic_close_session(s_ptt_mic);
         s_ptt_err = LINK_PTT_NO_PHONE; return false;
     }
     if (tap) rec_mark();
@@ -606,6 +623,10 @@ static void handle(const char *json, bool trusted)
         const cJSON *u = cJSON_GetObjectItemCaseSensitive(m, "upto");
         if (cJSON_IsNumber(u) && u->valuedouble >= 0) { sched_ack((uint32_t)u->valuedouble); if (sched_queued()) flush_ci(); }
     } else if (!strcmp(t, "ci_cfg")) sched_cfg(m);
+    else if (!strcmp(t, "say")) { char id[40]; copy_str(id, sizeof(id), m, "id"); speak_begin(id, get_int(m, "n", 0)); }
+    else if (!strcmp(t, "say_end")) speak_end();
+    else if (!strcmp(t, "say_stop")) speak_stop();
+    else if (!strcmp(t, "spk_cfg")) { int v = get_int(m, "vol", -1); if (v >= 0 && v <= 100) hw_pref_set("vol", v); }
     else if (!strcmp(t, "amber_heard") || !strcmp(t, "amber")) {
         // Amber answers in short bullet lines: keep '\n' (copy_str turns every control character into a space)
         char tx[304];
@@ -671,5 +692,6 @@ void link_start(void)
     s_nlock = xSemaphoreCreateMutex();
     xTaskCreate(link_task, "link", 4096, NULL, 3, NULL);
     sched_start(flush_ci);
-    xTaskCreate(tx_task, "link_tx", 3072, NULL, 4, NULL);
+    // stack in PSRAM: this task never writes flash (internal RAM is what the Wi-Fi hotspot needs)
+    xTaskCreateWithCaps(tx_task, "link_tx", 3072, NULL, 4, NULL, MALLOC_CAP_SPIRAM);
 }

@@ -63,6 +63,8 @@ object AppGraph {
     lateinit var guard: ToolGuard
     lateinit var tts: Tts
         private set
+    lateinit var amberVoice: AmberVoice
+    lateinit var speak: com.nunna.embercompanion.link.SpeakFlow
 
     /** The speech model the user picked (tiny by default). */
     val models: ModelStore get() = sttStores.getValue(prefs.sttModelId)
@@ -124,9 +126,30 @@ object AppGraph {
         )
         gatt = EmberGatt(app) { link }
         amber = com.nunna.embercompanion.link.AmberFlow(
-            api = gateway, send = { link.send(it) }, connected = { link.phase.value == LinkPhase.CONNECTED },
+            api = gateway, send = { m ->
+                link.send(m)
+                // v1.5: a final Amber reply that was delivered to the watch is also spoken on its speaker (if enabled).
+                if (m is Message.Amber && m.final && link.phase.value == LinkPhase.CONNECTED) speak.enqueue(m.id, m.text)
+            }, connected = { link.phase.value == LinkPhase.CONNECTED },
             nowMs = { System.currentTimeMillis() }, tzOffsetSeconds = { TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000 },
         )
+        amberVoice = AmberVoice(app) { prefs }
+        speak = com.nunna.embercompanion.link.SpeakFlow(
+            scope = scope,
+            io = object : com.nunna.embercompanion.link.SpeakIo {
+                override fun available() = link.phase.value == LinkPhase.CONNECTED && gatt.spkAvailable
+                override fun sendMsg(m: Message) = link.send(m)
+                override fun writeBlock(b: ByteArray) = gatt.writeSpk(b)
+                override fun queued() = gatt.spkQueued()
+                override fun fastLink(on: Boolean) = gatt.fastLink(on)
+            },
+            synth = { amberVoice.synthesize(it) },
+            enabled = { prefs.speakAmber },
+            nowMs = { android.os.SystemClock.elapsedRealtime() },
+            sleep = { delay(it) },
+        )
+        scope.launch { link.phase.collect { if (it == LinkPhase.DISCONNECTED) { speak.onDisconnected(); stopRinging() } } }   // no ringing without a watch
+        ringer.onAutoStop = { ringing.value = false }
         flow = TranslateFlow(
             transcribe = { s, lang -> withContext(Dispatchers.Default) { stt.transcribe(s, lang) } },
             translate = { t, f, to -> translator.translate(t, f, to) },
@@ -136,7 +159,7 @@ object AppGraph {
         guard = ToolGuard(buildTools(), Confirmer { spec, call -> askUser(spec, call) })
         link.onMessage = { m -> scope.launch { handle(m) } }
         link.onPttClip = { clip -> scope.launch { handleClip(clip) } }
-        link.onReadyHook = { scope.launch { delay(300); link.send(Message.AppLs); link.send(Message.RecsReq) } }
+        link.onReadyHook = { scope.launch { delay(300); link.send(Message.AppLs); link.send(Message.RecsReq); link.send(Message.SpkCfg(prefs.watchVol)) } }
         scope.launch { purgeOldAudio() }
     }
 
@@ -187,6 +210,7 @@ object AppGraph {
                 if (appStatus.value?.startsWith("Sending") == true) appStatus.value = watchError.value
             }
             is Message.Hello, is Message.Ci -> link.lifeTick()
+            is Message.SayReady, is Message.SaySkip, is Message.SayDone, is Message.SayStop -> speak.onMessage(m)
             is Message.Ptt -> pttLive.value = if (m.on) m.side else null
             else -> {}
         }

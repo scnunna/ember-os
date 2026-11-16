@@ -5,14 +5,14 @@ object ImaAdpcm {
     const val BLOCK_BYTES = 133
     const val SAMPLES = 256
 
-    private val STEP = intArrayOf(
+    internal val STEP_TABLE = intArrayOf(
         7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97,
         107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
         876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871,
         5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623,
         27086, 29794, 32767,
     )
-    private val IDX = intArrayOf(-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8)
+    internal val IDX_TABLE = intArrayOf(-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8)
 
     fun seqOf(block: ByteArray): Int = block[0].toInt() and 0xFF
 
@@ -27,14 +27,14 @@ object ImaAdpcm {
             val byte = b[i].toInt() and 0xFF
             for (half in 0..1) {
                 val nib = if (half == 0) byte and 0x0F else byte shr 4
-                val step = STEP[index]
+                val step = STEP_TABLE[index]
                 var diff = step shr 3
                 if (nib and 1 != 0) diff += step shr 2
                 if (nib and 2 != 0) diff += step shr 1
                 if (nib and 4 != 0) diff += step
                 pred = if (nib and 8 != 0) pred - diff else pred + diff
                 pred = pred.coerceIn(-32768, 32767)
-                index = (index + IDX[nib]).coerceIn(0, 88)
+                index = (index + IDX_TABLE[nib]).coerceIn(0, 88)
                 out[n++] = pred.toShort()
             }
         }
@@ -87,4 +87,53 @@ class AdpcmStream {
     }
 
     companion object { const val MAX_FILL_BLOCKS = 64 }
+}
+
+
+/**
+ * IMA-ADPCM encoder producing exactly the AUDIO block format (phone -> watch SPK blocks). Port of
+ * firmware/tools/ember_adpcm.py: each block starts with predictor = its first sample, the step index carries over
+ * from the previous block (start 0), and all 256 samples are coded. [seq] is a u8 counter starting at 0.
+ */
+class ImaAdpcmEncoder {
+    private var index = 0
+    private var seq = 0
+
+    fun reset() { index = 0; seq = 0 }
+
+    /** Encodes exactly [ImaAdpcm.SAMPLES] samples starting at [off]. */
+    fun encodeBlock(samples: ShortArray, off: Int = 0): ByteArray {
+        require(off + ImaAdpcm.SAMPLES <= samples.size) { "need 256 samples" }
+        var pred = samples[off].toInt()
+        val out = ByteArray(ImaAdpcm.BLOCK_BYTES)
+        out[0] = seq.toByte(); seq = (seq + 1) and 0xFF
+        out[1] = (pred and 0xFF).toByte(); out[2] = ((pred shr 8) and 0xFF).toByte()
+        out[3] = index.toByte(); out[4] = 0
+        for (i in 0 until ImaAdpcm.SAMPLES) {
+            val step = ImaAdpcm.STEP_TABLE[index]
+            var diff = samples[off + i] - pred
+            var nib = 0
+            if (diff < 0) { nib = 8; diff = -diff }
+            if (diff >= step) { nib = nib or 4; diff -= step }
+            if (diff >= step shr 1) { nib = nib or 2; diff -= step shr 1 }
+            if (diff >= step shr 2) nib = nib or 1
+            var d = step shr 3
+            if (nib and 1 != 0) d += step shr 2
+            if (nib and 2 != 0) d += step shr 1
+            if (nib and 4 != 0) d += step
+            pred = (if (nib and 8 != 0) pred - d else pred + d).coerceIn(-32768, 32767)
+            index = (index + ImaAdpcm.IDX_TABLE[nib]).coerceIn(0, 88)
+            val bi = 5 + i / 2
+            out[bi] = (if (i % 2 == 0) nib else (out[bi].toInt() or (nib shl 4))).toByte()
+        }
+        return out
+    }
+
+    /** Encodes a whole utterance; the last block is padded with silence (zeros). Starts a fresh stream (seq 0, index 0). */
+    fun encodeAll(pcm: ShortArray): List<ByteArray> {
+        reset()
+        val blocks = (pcm.size + ImaAdpcm.SAMPLES - 1) / ImaAdpcm.SAMPLES
+        val padded = if (pcm.size == blocks * ImaAdpcm.SAMPLES) pcm else pcm.copyOf(blocks * ImaAdpcm.SAMPLES)
+        return List(blocks) { encodeBlock(padded, it * ImaAdpcm.SAMPLES) }
+    }
 }

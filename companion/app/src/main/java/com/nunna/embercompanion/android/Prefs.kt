@@ -100,6 +100,22 @@ class Prefs(ctx: Context) {
         set(v) { sp.edit().putInt("ci_snooze", v.coerceIn(5, 60)).apply() }
     fun ciCfg() = Message.CiCfg(ciOn, ciSnooze)
 
+    /** v1.5: Amber speaks her replies on the watch speaker (default on). */
+    var speakAmber: Boolean
+        get() = sp.getBoolean("speak_amber", true)
+        set(v) { sp.edit().putBoolean("speak_amber", v).apply() }
+    /** Saved offline TTS voice name; null = pick the best offline en-US voice. */
+    var voiceName: String?
+        get() = sp.getString("voice_name", null)
+        set(v) { sp.edit().putString("voice_name", v).apply() }
+    var speechRate: Float
+        get() = sp.getFloat("speech_rate", 1.0f)
+        set(v) { sp.edit().putFloat("speech_rate", v.coerceIn(0.8f, 1.3f)).apply() }
+    /** Watch speaker volume 0..100 (sent as spk_cfg). */
+    var watchVol: Int
+        get() = sp.getInt("watch_vol", 70)
+        set(v) { sp.edit().putInt("watch_vol", v.coerceIn(0, 100)).apply() }
+
     var lastRecs: String
         get() = sp.getString("recs", "") ?: ""
         set(v) { sp.edit().putString("recs", v).apply() }

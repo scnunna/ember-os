@@ -6,7 +6,10 @@
 #include "host/ble_hs.h"
 
 // ---- GATT glue (used by ble.c) ----
-extern const ble_uuid128_t LINK_UUID_SVC, LINK_UUID_CMD, LINK_UUID_EVT, LINK_UUID_AUDIO;
+extern const ble_uuid128_t LINK_UUID_SVC, LINK_UUID_CMD, LINK_UUID_EVT, LINK_UUID_AUDIO, LINK_UUID_SPK;
+int  link_spk_access(uint16_t ch, uint16_t ah, struct ble_gatt_access_ctxt *ctxt, void *arg);
+struct cJSON;
+void link_send_json(struct cJSON *o);     // any task: queue an EVT message (takes ownership)
 extern uint16_t link_evt_handle, link_audio_handle;
 int  link_cmd_access(uint16_t ch, uint16_t ah, struct ble_gatt_access_ctxt *ctxt, void *arg);
 int  link_noop_access(uint16_t ch, uint16_t ah, struct ble_gatt_access_ctxt *ctxt, void *arg);
