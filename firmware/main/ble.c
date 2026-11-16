@@ -170,7 +170,7 @@ static void on_notification(const uint8_t *d, int len)
     sanitize(txt, sizeof(txt), d + 8, len - 8);
     if (icon == 0x01 || icon == 0x02) {
         bsp_display_lock(0);
-        launcher_wake();
+        launcher_event();
         ui_msg(icon == 0x01 ? "Incoming call" : "Call ended");
         bsp_display_unlock();
         return;
@@ -183,7 +183,7 @@ static void on_notification(const uint8_t *d, int len)
     if (hw_rtc_get(&t)) snprintf(n->time, sizeof(n->time), "%02d:%02d", t.tm_hour, t.tm_min); else n->time[0] = 0;
     s_notif_total++;
     bsp_display_lock(0);
-    launcher_wake();
+    launcher_event();
     ui_msg(txt);
     bsp_display_unlock();
 }

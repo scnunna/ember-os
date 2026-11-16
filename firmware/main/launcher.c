@@ -21,8 +21,9 @@ static lv_timer_t *s_idle_tmr;
 static int total_apps(void) { return APP_COUNT + script_count(); }
 static void app_stop_idx(int i) { if (i >= APP_COUNT) script_stop(); else if (i >= 0 && APPS[i].stop) APPS[i].stop(); }
 
-static int bright(void) { return hw_pref_get("bright", 70); }
-static int timeout_s(void) { return hw_pref_get("timeout", 10); }   // was 20: screen time is the biggest drain
+static int bright(void) { return hw_pref_get("bright", 60); }
+static int timeout_s(void) { return hw_pref_get("timeout", 10); }   // full brightness (owner 2026-11-15: 10 s)
+static int dimfor_s(void) { return hw_pref_get("dimfor", 300); }     // then dimmed for 5 min, then off
 
 static void screen_set(bool on)
 {
@@ -37,6 +38,14 @@ static void screen_set(bool on)
 bool launcher_screen_on(void) { return s_on; }
 static uint32_t s_raise_wakes;
 uint32_t launcher_raise_wakes(void) { return s_raise_wakes; }
+
+// Events (check-in, Amber reply, phone notification) do NOT light a dark screen (owner 2026-11-15: only the button
+// wakes it); the caller buzzes, and the content is waiting when he presses BOOT. Pref "evwake"=1 restores lighting.
+void launcher_event(void)
+{
+    if (hw_pref_get("evwake", 0)) launcher_wake();
+    else if (s_on) s_last_act = lv_tick_get();
+}
 void launcher_raise(void)
 {
     if (s_on) return;                            // only a dark screen: a raise while dimmed no longer keeps it alive
@@ -252,12 +261,12 @@ void launcher_open_script(const char *name)
 static void idle_cb(lv_timer_t *t)
 {
     uint32_t inact = lv_display_get_inactive_time(NULL);
-    if (inact < 400 && (!s_on || s_dim)) { launcher_wake(); return; }
+    if (inact < 400 && s_on && s_dim) { launcher_wake(); return; }   // a touch brightens a dimmed screen; a dark one stays dark
     if (inact < 400) s_last_act = lv_tick_get();
     uint32_t idle = lv_tick_elaps(s_last_act) / 1000;
     int to = timeout_s();
     if (s_on && !s_dim && idle >= (uint32_t)to) { s_dim = true; bsp_display_brightness_set(bright() / 4); }
-    else if (s_on && s_dim && idle >= (uint32_t)to + 4) { screen_set(false); }
+    else if (s_on && s_dim && idle >= (uint32_t)(to + dimfor_s())) { screen_set(false); }
     if (s_on) face_tick();
 }
 
@@ -324,7 +333,8 @@ static void read_wrap(lv_indev_t *indev, lv_indev_data_t *data)
         data->state = s_syn.pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
     }
     if (data->state == LV_INDEV_STATE_PRESSED) {
-        if (!s_on || s_dim) { s_swallow = true; s_swallowed++; launcher_wake(); }
+        if (!s_on) { s_swallow = true; s_swallowed++; }                 // dark screen: touches do nothing (BOOT wakes)
+        else if (s_dim) { s_swallow = true; s_swallowed++; launcher_wake(); }
         else s_last_act = lv_tick_get();
     } else s_swallow = false;
     if (s_swallow) data->state = LV_INDEV_STATE_RELEASED;      // widgets never see the wake-up touch
@@ -344,7 +354,15 @@ void launcher_start(void)
     overlay_start();
     lv_indev_t *in = bsp_display_get_input_dev();
     if (in) lv_indev_set_read_cb(in, read_wrap);
+    // one-time move to the 2026-11-15 power settings (stored prefs from before would otherwise win)
+    if (!hw_pref_get("pwr_v2", 0)) {
+        hw_pref_set("bright", 60); hw_pref_set("raise", 0); hw_pref_set("timeout", 10); hw_pref_set("pwr_v2", 1);
+        extern volatile bool s_raise_on; s_raise_on = false;
+    }
     bsp_display_brightness_set(bright());      // under the LVGL lock: never race a screen flush on the SPI bus
+    // woken from deep sleep by wrist motion or the check-in timer: only to count steps / ask, so stay dark
+    int wc = power_wake_cause();
+    if (wc == 3 /* EXT1: motion */ || wc == 4 /* TIMER */) screen_set(false);
     bsp_display_unlock();
 }
 

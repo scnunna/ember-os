@@ -173,7 +173,7 @@ static struct { uint32_t date; uint32_t d[7]; } s_hist;  // d[0] = today
 static uint32_t s_saved_steps;
 
 static volatile uint32_t s_still_ms;
-volatile bool s_raise_on = true;        // mirrors pref "raise" (Settings toggles it)
+volatile bool s_raise_on = false;       // mirrors pref "raise" (default off since 2026-11-15)
 bool hw_imu_ok(void) { return s_imu_ok; }
 uint32_t hw_imu_still_ms(void) { return s_imu_ok ? s_still_ms : 0; }
 
@@ -568,7 +568,7 @@ void hw_init(void)
     rtc_init();
     motor_init();
     s_rsign = hw_pref_get("rsign", -1) < 0 ? -1 : 1;
-    s_raise_on = hw_pref_get("raise", 1);
+    s_raise_on = hw_pref_get("raise", 0);   // off (owner 2026-11-15: no wake on movement)
     imu_init();
     hw_audio_preinit();
     hw_storage_remount();

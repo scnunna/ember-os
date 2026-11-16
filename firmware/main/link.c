@@ -481,7 +481,7 @@ static void wake_toast(const char *msg, int buzz_n)
 {
     if (buzz_n) hw_buzz_pattern(buzz_n, 80, 120);
     bsp_display_lock(0);
-    launcher_wake();
+    launcher_event();
     if (msg) ui_msg(msg);
     bsp_display_unlock();
 }

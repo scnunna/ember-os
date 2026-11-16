@@ -119,7 +119,7 @@ static void tick(lv_timer_t *t)
 {
     if (s_ci_req) {
         s_ci_req = false;
-        launcher_wake();
+        launcher_event();
         if (s_ci_box) { lv_obj_delete(s_ci_box); s_ci_box = NULL; }
         ci_show();
         lv_timer_reset(t);
@@ -197,13 +197,17 @@ int ui_checkin(const char *head, const char *body, const char *amber_ctx, int ti
     snprintf(s_ci_body, sizeof(s_ci_body), "%s", body);
     snprintf(s_ci_ctx, sizeof(s_ci_ctx), "%s", amber_ctx ? amber_ctx : "");
     s_ci_result = -1;
-    // a dark screen has no LVGL tick: light it from here so the overlay timer runs (same as wake_toast in link.c)
+    // the prompt waits on the (possibly dark) screen: it buzzes now and again after 2 min; BOOT shows it
     bsp_display_lock(0);
-    launcher_wake();
+    launcher_event();
     bsp_display_unlock();
     s_ci_waiting = true;
     s_ci_req = true;
-    bool got = xSemaphoreTake(s_ci_done, pdMS_TO_TICKS(timeout_s * 1000)) == pdTRUE;
+    bool got = xSemaphoreTake(s_ci_done, pdMS_TO_TICKS((timeout_s > 120 ? 120 : timeout_s) * 1000)) == pdTRUE;
+    if (!got && timeout_s > 120) {
+        hw_buzz_pattern(2, 90, 120);
+        got = xSemaphoreTake(s_ci_done, pdMS_TO_TICKS((timeout_s - 120) * 1000)) == pdTRUE;
+    }
     s_ci_waiting = false;
     if (!got) { s_ci_cancel = true; return -1; }
     return s_ci_result;

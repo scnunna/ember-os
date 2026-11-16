@@ -22,7 +22,8 @@ void launcher_open(int idx);
 void launcher_home(void);        // app grid
 void launcher_face(void);        // watch face
 void launcher_back(void);        // one level up (app -> grid -> face)
-void launcher_wake(void);        // light the screen / reset idle timer
+void launcher_wake(void);
+void launcher_event(void);       // an event happened: keeps a lit screen on; never lights a dark one (pref evwake)        // light the screen / reset idle timer
 void launcher_synth(bool active, bool pressed, int x, int y);   // test hook: fake finger
 int  launcher_state(void);       // 0 face, 1 grid, 2 app
 int  launcher_cur(void);

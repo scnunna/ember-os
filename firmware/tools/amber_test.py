@@ -63,6 +63,7 @@ def link(obj, wait=0.8):
 
 
 def tap(xy, wait=0.8):
+    ask('screen on', 'CMD screen')            # like pressing BOOT: prompts wait on a dark screen since 2026-11-15
     ask(f'tap {xy[0]} {xy[1]}', 'CMD tap'); read_for(wait)
 
 

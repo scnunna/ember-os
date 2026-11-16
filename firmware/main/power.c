@@ -5,6 +5,7 @@
 //           interrupt-driven, IMU polls slowly when still. Automatic light sleep between wake-ups when on battery.
 //   DEEP    long DOZE with no motion, on battery, nothing running -> ESP deep sleep (~10s of uA for the SoC).
 //           Wakes on the BOOT button (ext0, GPIO0) or wrist motion (QMI8658 wake-on-motion -> INT1 -> GPIO21, ext1).
+//           A motion wake only restarts step counting: the screen stays dark (launcher_start checks the wake cause).
 //
 // Light sleep drops the USB-serial link, so neither sleep is used while USB power is present (dev mode).
 #include <stdio.h>
@@ -123,8 +124,7 @@ void power_update(bool screen_on)
         panel_cmd(0x28);                          // DISPOFF
         panel_cmd(0x10);                          // SLPIN: panel ~uA instead of ~mA at brightness 0
         s_doze_since = esp_timer_get_time() / 1000;
-        gpio_wakeup_enable(BSP_LCD_TOUCH_INT, GPIO_INTR_LOW_LEVEL);   // a touch wakes the chip from light sleep
-        esp_sleep_enable_gpio_wakeup();
+        // touch no longer wakes anything while dark (owner: only the BOOT button wakes the watch)
         locks(!power_sleep_allowed());
     }
 }
