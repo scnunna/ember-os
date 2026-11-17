@@ -25,7 +25,7 @@ class TranslateFlow(
         }
         if (heard.isBlank()) return TranslateResult(side, "", "", "TR-03: I did not hear any words. Try again, a bit closer to the microphone.")
         val out = try { translate(heard, from, to).trim() } catch (e: Exception) {
-            return TranslateResult(side, heard, "", "TR-04: Could not translate. Open Travel translate and download both language packs.")
+            return TranslateResult(side, heard, "", "TR-04: Could not translate. Check that the translation model (Gemma) is downloaded: Travel translate > download (via Ember Gateway).")
         }
         send(Message.Tr(side, heard, out))
         val speakErr = try { speak(out, to); null } catch (e: Exception) {

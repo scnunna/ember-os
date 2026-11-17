@@ -9,3 +9,5 @@ endif()
 if(SNAP)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE WATCH_SNAP=1)
 endif()
+# diag.c records crash backtraces across the reset by wrapping the panic handler
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_panic_handler")

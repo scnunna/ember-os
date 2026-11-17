@@ -54,8 +54,11 @@ static void panel_cmd(uint8_t cmd)
 }
 
 // ---- policy ----
+static volatile bool s_force_batt;              // USB shell "lpforce 1": behave as on battery while plugged (diagnosis)
+void power_force_battery(bool on) { s_force_batt = on; }
 static bool on_battery(void)
 {
+    if (s_force_batt) return true;
     batt_t b; hw_batt(&b);
     return b.present && !b.vbus;
 }

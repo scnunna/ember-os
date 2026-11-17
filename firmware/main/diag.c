@@ -37,12 +37,41 @@ static volatile int s_in_hook;
 static uint32_t s_minute_lines, s_dropped_lines;
 static int64_t s_minute_t0;
 RTC_NOINIT_ATTR static char s_crumb[72];     // last event, survives a software/watchdog/panic reset
+// Crash backtrace kept across the reset (the USB console is not there in the field): the panic handler is wrapped
+// (linker --wrap, see CMakeLists.txt), records reason + up to 16 return addresses, then does the normal panic.
+// The next boot logs "CRASHINFO ..." -> decode with xtensa-esp32s3-elf-addr2line -e build/watch.elf <addrs>.
+RTC_NOINIT_ATTR static uint32_t s_bt[16];
+RTC_NOINIT_ATTR static uint32_t s_bt_n, s_bt_magic, s_bt_core;
+RTC_NOINIT_ATTR static char s_bt_reason[48];
 RTC_NOINIT_ATTR static uint32_t s_crumb_magic;
 
 // Timestamps: the RTC is read once at boot; after that local time = that + uptime (esp_timer keeps counting through
 // light sleep), so logging never touches the I2C bus and is safe from any task.
 static time_t s_base_local = -1;
 static int64_t s_base_us;
+#include "esp_private/panic_internal.h"
+#include "esp_debug_helpers.h"
+#include "esp_cpu.h"
+#include "esp_cpu_utils.h"
+#include "xtensa_context.h"
+void __real_esp_panic_handler(panic_info_t *info);
+void __wrap_esp_panic_handler(panic_info_t *info)
+{
+    s_bt_n = 0;
+    s_bt_core = info->core;
+    const char *r = info->reason ? info->reason : "?";
+    int i = 0; for (; i < (int)sizeof(s_bt_reason) - 1 && r[i]; i++) s_bt_reason[i] = r[i];
+    s_bt_reason[i] = 0;
+    const XtExcFrame *f = (const XtExcFrame *)info->frame;
+    if (f) {
+        esp_backtrace_frame_t fr = {.pc = f->pc, .sp = f->a1, .next_pc = f->a0, .exc_frame = f};
+        s_bt[s_bt_n++] = esp_cpu_process_stack_pc(fr.pc);
+        while (s_bt_n < 16 && fr.next_pc && esp_backtrace_get_next_frame(&fr)) s_bt[s_bt_n++] = esp_cpu_process_stack_pc(fr.pc);
+    }
+    s_bt_magic = 0xBAC7DEAD;
+    __real_esp_panic_handler(info);
+}
+
 static void stamp(char *b, size_t n)
 {
     int64_t up = esp_timer_get_time();
@@ -187,6 +216,12 @@ void diag_start(void)
     char prev[72] = "-";
     if (s_crumb_magic == 0xD1A6C0DE && rr != ESP_RST_POWERON) snprintf(prev, sizeof(prev), "%s", s_crumb);
     diag_event("BOOT fw=" EMBER_VERSION " reset=%s(%d) wake=%d last_before_reset=[%s]", reset_name(rr), (int)rr, power_wake_cause(), prev);
+    if (s_bt_magic == 0xBAC7DEAD && s_bt_n <= 16) {
+        char bt[16 * 11 + 1]; int o = 0;
+        for (uint32_t i = 0; i < s_bt_n; i++) o += snprintf(bt + o, sizeof(bt) - o, "0x%08lx ", (unsigned long)s_bt[i]);
+        diag_event("CRASHINFO core=%lu reason=%.40s bt=%s", (unsigned long)s_bt_core, s_bt_reason, bt);
+    }
+    s_bt_magic = 0;
     s_orig = esp_log_set_vprintf(hook);
     snapshot();
     xTaskCreate(diag_task, "diag", 3072, NULL, 1, NULL);

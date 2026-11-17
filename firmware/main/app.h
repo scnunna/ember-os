@@ -40,6 +40,7 @@ uint32_t launcher_raise_wakes(void);   // screen wake-ups caused by raising the 
 // ---- power manager (power.c) ----
 typedef struct { int64_t ms_active, ms_doze; uint32_t wakes, deep_count; bool sleep_allowed, screen_on; } power_stats_t;
 void power_init(void);
+void power_force_battery(bool on);   // test: sleep policy as if on battery (USB shell lpforce)
 void power_start(void);
 void power_update(bool screen_on);
 bool power_sleep_allowed(void);

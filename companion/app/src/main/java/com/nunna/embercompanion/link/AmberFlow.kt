@@ -46,6 +46,19 @@ class AmberFlow(
         const val ACTIVE_MS = 3 * 60_000L
         const val SLOW_MS = 5 * 60_000L
         const val NO_REPLY = "Can't reach Life OS right now. Try again in a minute."
+
+        /**
+         * Whisper writes a caption instead of words when it hears no speech: "(sad music)", "(sad music" (seen
+         * 2026-11-15/16: Amber answered "Noted: sad music tonight"), "[Music]", "[BLANK_AUDIO]", "(silence)", "♪♪".
+         * A caption STARTS with a bracket / music note and names a sound; a real sentence like "play some music" is kept.
+         */
+        private val SOUND = Regex("music|noise|silence|blank|applause|laugh|wind|static|inaudible|speech|breath|sigh|beep|click|cough|typing|rain|sound|bell|buzz", RegexOption.IGNORE_CASE)
+        fun isNoiseCaption(t: String): Boolean {
+            val s = t.trim()
+            if (s.isEmpty() || s.none { it.isLetterOrDigit() }) return true      // only punctuation / music notes
+            val bracketed = s.first() in "([*♪" && s.length <= 48 && s.count { it == ' ' } <= 5
+            return bracketed && SOUND.containsMatchIn(s)
+        }
     }
 
     private fun add(l: AmberLine) { _lines.value = (_lines.value + l).takeLast(60) }
@@ -54,7 +67,7 @@ class AmberFlow(
     /** Voice path: [text] is the transcript ("" when nothing was heard). */
     suspend fun heardVoice(text: String, ctx: Message.PttCtx?) {
         val t = text.trim()
-        if (t.isEmpty()) { send(Message.Amber("local", "I did not catch that. Hold the button and try again.", true)); return }
+        if (t.isEmpty() || isNoiseCaption(t)) { send(Message.Amber("local", "I did not catch that. Hold the button and try again.", true)); return }
         send(Message.AmberHeard(cut(t)))
         submit(t, ctx, voice = true)
     }

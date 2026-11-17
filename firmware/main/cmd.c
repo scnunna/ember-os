@@ -448,7 +448,11 @@ static void run_line(char *l)
     else if (sscanf(l, "diaglog %d", &n) == 1) diag_dump(n);           // last n KB of /flash/diag.log
     else if (!strncmp(l, "diagclear", 9)) { diag_clear(); printf("CMD diagclear\n"); }
     else if (!strncmp(l, "diagnote ", 9)) { diag_event("NOTE %s", l + 9); diag_flush(); printf("CMD diagnote\n"); }
-    else if (!strncmp(l, "pmstats", 7)) { esp_pm_dump_locks(stdout); printf("CMD pmstats\n"); }
+    else if (sscanf(l, "lpforce %d", &n) == 1) { power_force_battery(n != 0); printf("CMD lpforce %d sleep_allowed=%d\n", n, power_sleep_allowed()); }
+    else if (!strncmp(l, "crashtest", 9)) {                     // tests the crash capture: deliberate NULL write
+        printf("CMD crashtest\n"); usj_end_packet(); vTaskDelay(pdMS_TO_TICKS(200));
+        *(volatile int *)0 = 1;
+    } else if (!strncmp(l, "pmstats", 7)) { esp_pm_dump_locks(stdout); printf("CMD pmstats\n"); }
     else if (!strncmp(l, "i2spark", 7)) { hw_audio_park(); printf("CMD i2spark\n"); }
     else if (!strncmp(l, "saytest", 7)) {                       // plays a 1.5 s chime through the v1.5 voice path
         const int nb = 94;                                      // 94 x 16 ms = 1.5 s
