@@ -54,3 +54,11 @@ brightness default, check-in prompt timeout vs "missed".
 - Fix plan (needs owner OK): owner downloads the recording via Companion > Meeting notes (also deletes it on the watch);
   back up /flash/apps + notes over USB; reformat the FAT partition; restore. Add a boot-time leak check.
 - `du` shell command lists usage.
+
+## 2026-11-18
+- Greeting at power-on/restart ("Good morning/afternoon/evening" + weekday, 2 s); "Good bye" (2 s) when BOOT turns the screen off on the face; power held ~1 s -> "Good bye / Switching off..." + steps/log saved before the PMU cuts power at 6 s.
+- Translate: tap the language pair to swap; gear -> two wheels (I speak / They speak, 30 languages) -> Save sends tr_cfg to the phone (phone saves + echoes).
+- Amber app: Voice/Text chip; BOOT click inside Amber toggles spoken replies (mutes her mid-sentence). Hold still = talk.
+- Battery: diag sleep% parse fixed (was always 0). Screen off + battery rules: 87% light sleep. Every SNAP now logs `block=` (usb / recording / wifi / setting_off / ok). Next: one real unplugged wear to read block= and sleep% with the phone linked.
+- Crash capture verified: `CRASHINFO core reason bt=...` -> `xtensa-esp32s3-elf-addr2line -pfiaC -e build/*.elf <addrs>`.
+- Translate on the phone: still needs the Gemma model (TR-06) and a USB/adb look at the phone; not verified yet.

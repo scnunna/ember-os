@@ -21,6 +21,7 @@
 #include "speak.h"
 #include "esp_pm.h"
 #include "diag.h"
+#include "wifi.h"
 #include "hw.h"
 #include "link.h"
 #include "ble.h"
@@ -448,7 +449,7 @@ static void run_line(char *l)
     else if (sscanf(l, "diaglog %d", &n) == 1) diag_dump(n);           // last n KB of /flash/diag.log
     else if (!strncmp(l, "diagclear", 9)) { diag_clear(); printf("CMD diagclear\n"); }
     else if (!strncmp(l, "diagnote ", 9)) { diag_event("NOTE %s", l + 9); diag_flush(); printf("CMD diagnote\n"); }
-    else if (sscanf(l, "lpforce %d", &n) == 1) { power_force_battery(n != 0); printf("CMD lpforce %d sleep_allowed=%d\n", n, power_sleep_allowed()); }
+    else if (sscanf(l, "lpforce %d", &n) == 1) { power_force_battery(n); printf("CMD lpforce %d min sleep_allowed=%d\n", n, power_sleep_allowed()); }
     else if (!strncmp(l, "crashtest", 9)) {                     // tests the crash capture: deliberate NULL write
         printf("CMD crashtest\n"); usj_end_packet(); vTaskDelay(pdMS_TO_TICKS(200));
         *(volatile int *)0 = 1;
@@ -501,8 +502,8 @@ static void run_line(char *l)
     } else if (!strncmp(l, "app ", 4)) cmd_app(l + 4);
     else if (!strncmp(l, "pwr", 3)) {
         power_stats_t p; power_stats(&p); batt_t b; hw_batt(&b);
-        printf("CMD pwr screen=%s active_s=%lld doze_s=%lld wakes=%lu deep_sleeps=%lu sleep_allowed=%d still_ms=%lu batt_present=%d pct=%d mv=%d usb=%d charging=%d wake_cause=%d\n",
-               p.screen_on ? "on" : "off", p.ms_active / 1000, p.ms_doze / 1000, (unsigned long)p.wakes, (unsigned long)p.deep_count, p.sleep_allowed,
+        printf("CMD pwr block=%s wifi=%d rec=%d screen=%s active_s=%lld doze_s=%lld wakes=%lu deep_sleeps=%lu sleep_allowed=%d still_ms=%lu batt_present=%d pct=%d mv=%d usb=%d charging=%d wake_cause=%d\n",
+               power_sleep_block(), wifi_ap_active(), rec_active(), p.screen_on ? "on" : "off", p.ms_active / 1000, p.ms_doze / 1000, (unsigned long)p.wakes, (unsigned long)p.deep_count, p.sleep_allowed,
                (unsigned long)hw_imu_still_ms(), b.present, b.pct, b.mv, b.vbus, b.charging, power_wake_cause());
     } else if (sscanf(l, "deepsleep %d", &n) == 1) {
         printf("CMD deepsleep %d s (USB drops and comes back)\n", n);

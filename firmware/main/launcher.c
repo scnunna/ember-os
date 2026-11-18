@@ -384,16 +384,86 @@ void launcher_start(void)
     // woken from deep sleep by wrist motion or the check-in timer: only to count steps / ask, so stay dark
     int wc = power_wake_cause();
     if (wc == 3 /* EXT1: motion */ || wc == 4 /* TIMER */) screen_set(false);
+    else launcher_greet_by_time();                   // switched on / restarted: good morning / afternoon / evening
     bsp_display_unlock();
+}
+
+// ---- greeting / good-bye (owner 2026-11-18): a 2 s full-screen animation; display lock held by the caller ----
+static lv_obj_t *s_greet;
+static lv_timer_t *s_greet_tmr;
+static bool s_greet_off;                        // turn the screen off when the good-bye ends
+static void greet_anim_y(void *o, int32_t v) { lv_obj_set_style_translate_y((lv_obj_t *)o, v, 0); }
+static void greet_end(lv_timer_t *t)
+{
+    s_greet_tmr = NULL;
+    if (s_greet) { lv_obj_delete(s_greet); s_greet = NULL; }
+    if (s_greet_off) { s_greet_off = false; screen_set(false); }
+}
+static void greet_cancel(void)
+{
+    if (s_greet_tmr) { lv_timer_delete(s_greet_tmr); s_greet_tmr = NULL; }
+    if (s_greet) { lv_obj_delete(s_greet); s_greet = NULL; }
+    s_greet_off = false;
+}
+bool launcher_greeting_active(void) { return s_greet != NULL; }
+void launcher_greet(const char *big, const char *small, int ms, bool off_after)
+{
+    diag_event("GREET %s", big);
+    greet_cancel();
+    if (!s_on) launcher_wake();
+    s_greet = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(s_greet, 410, 502);
+    lv_obj_set_pos(s_greet, 0, 0);
+    lv_obj_set_style_bg_color(s_greet, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_greet, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_greet, 0, 0);
+    lv_obj_remove_flag(s_greet, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *b = ui_label(s_greet, &lv_font_montserrat_48, C_ACCENT, big);
+    lv_obj_set_width(b, 380);
+    lv_label_set_long_mode(b, LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_set_style_text_align(b, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(b, LV_ALIGN_CENTER, 0, -20);
+    if (small && small[0]) {
+        lv_obj_t *l = ui_label(s_greet, &lv_font_montserrat_20, C_DIM, small);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align_to(l, b, LV_ALIGN_OUT_BOTTOM_MID, 0, 18);
+    }
+    // fade + rise in, hold, fade out
+    lv_obj_fade_in(s_greet, 350, 0);
+    lv_anim_t a; lv_anim_init(&a);
+    lv_anim_set_var(&a, b); lv_anim_set_exec_cb(&a, greet_anim_y);
+    lv_anim_set_values(&a, 40, 0); lv_anim_set_duration(&a, 450); lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_start(&a);
+    lv_obj_fade_out(s_greet, 350, ms > 400 ? ms - 350 : 0);
+    s_greet_off = off_after;
+    s_greet_tmr = lv_timer_create(greet_end, ms, NULL);
+    lv_timer_set_repeat_count(s_greet_tmr, 1);
+    s_last_act = lv_tick_get();
+}
+void launcher_greet_by_time(void)
+{
+    struct tm t; const char *g = "Hello";
+    if (hw_rtc_get(&t)) g = t.tm_hour < 12 ? "Good morning" : t.tm_hour < 17 ? "Good afternoon" : "Good evening";
+    char d[40] = "";
+    static const char *wd[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+    if (hw_rtc_get(&t)) snprintf(d, sizeof(d), "%s", wd[t.tm_wday % 7]);
+    launcher_greet(g, d, 2000, false);
 }
 
 // BOOT-button actions (called from buttons.c task)
 void launcher_btn_short(void)
 {
-    if (speak_active()) { speak_stop(); return; }    // a press stops Amber's voice
     bsp_display_lock(0);
+    if (s_on && !s_dim && s_state == ST_APP && s_cur >= 0 && s_cur < APP_COUNT && !strcmp(APPS[s_cur].name, "Amber")) {
+        app_amber_button();                          // in Amber: BOOT click = voice on/off (mutes her mid-sentence)
+        s_last_act = lv_tick_get(); bsp_display_unlock(); return;
+    }
+    bsp_display_unlock();
+    if (speak_active()) { speak_stop(); return; }    // elsewhere a press stops Amber's voice
+    bsp_display_lock(0);
+    if (s_greet && s_greet_off) { greet_cancel(); launcher_wake(); bsp_display_unlock(); return; }   // pressed during good-bye: stay on
     if (!s_on || s_dim) launcher_wake();
-    else if (s_state == ST_FACE) screen_set(false);     // on the watch face, the button = screen off
+    else if (s_state == ST_FACE) launcher_greet("Good bye", NULL, 2000, true);   // on the watch face: good-bye, then screen off
     else if (s_state == ST_APP && s_cur >= APP_COUNT && script_button()) s_last_act = lv_tick_get();   // the script used it
     else { s_last_act = lv_tick_get(); launcher_back(); }
     bsp_display_unlock();

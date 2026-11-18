@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "app.h"
+#include "speak.h"
 #include "hw.h"
 #include "link.h"
 
@@ -164,12 +165,37 @@ static void poll(lv_timer_t *t)
     rebuild();
 }
 
+// reply mode: VOICE = Amber speaks through the watch speaker (and shows the text); TEXT = text only.
+// The watch's BOOT click toggles it while this app is open; if she is talking, the click mutes her at once.
+static lv_obj_t *s_mode;
+static void mode_show(void)
+{
+    if (!s_mode) return;
+    bool v = hw_pref_get("speak", 1);
+    lv_label_set_text(lv_obj_get_child(s_mode, 0), v ? LV_SYMBOL_VOLUME_MAX "\nVoice" : LV_SYMBOL_MUTE "\nText");
+    lv_obj_set_style_bg_color(s_mode, lv_color_hex(v ? 0x1F7A4D : 0x3A3A3A), 0);
+}
+static void mode_toggle(void)
+{
+    bool v = !hw_pref_get("speak", 1);
+    hw_pref_set("speak", v);
+    if (!v && speak_active()) speak_stop();
+    hw_buzz(v ? 40 : 20);
+    mode_show();
+    if (s_status) lv_label_set_text(s_status, v ? "Amber will answer out loud" : "Muted: answers as text only");
+}
+static void mode_cb(lv_event_t *e) { mode_toggle(); }
+void app_amber_button(void) { mode_toggle(); }
+
 void app_amber_start(lv_obj_t *scr)
 {
     s_scr = scr;
     ui_title(scr, "Amber");
-    s_talk = ui_btn(scr, LV_SYMBOL_AUDIO "  Hold to talk", 330, 84, 0x7A4A12, NULL, NULL);
-    lv_obj_align(s_talk, LV_ALIGN_TOP_MID, 0, 74);
+    s_talk = ui_btn(scr, LV_SYMBOL_AUDIO "  Hold to talk", 226, 84, 0x7A4A12, NULL, NULL);
+    lv_obj_align(s_talk, LV_ALIGN_TOP_MID, -58, 74);
+    s_mode = ui_btn(scr, "", 104, 84, 0x1E2633, mode_cb, NULL);
+    lv_obj_align(s_mode, LV_ALIGN_TOP_MID, 120, 74);
+    mode_show();
     lv_obj_add_event_cb(s_talk, talk_ev, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_talk, talk_ev, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(s_talk, talk_ev, LV_EVENT_PRESS_LOST, NULL);
@@ -195,7 +221,7 @@ void app_amber_stop(void)
     for (int i = 0; i < 30 && link_ptt_active(); i++) vTaskDelay(pdMS_TO_TICKS(10));
     if (s_resume_rec) { s_resume_rec = false; rec_pause(false); }   // never leave a recording paused
     if (s_tmr) { lv_timer_delete(s_tmr); s_tmr = NULL; }
-    s_scr = s_status = s_list = s_talk = s_sheet = NULL;
+    s_scr = s_status = s_list = s_talk = s_sheet = s_mode = NULL;
 }
 
 // Holding the watch button (display lock held): open Amber and listen while held; releasing sends.

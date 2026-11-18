@@ -56,6 +56,7 @@ int  link_amber_count(void);
 bool link_amber_get(int i, link_amber_t *out);    // 0 = newest
 int  link_amber_gen(void);                         // changes on every new line
 bool link_ptt_active(void);
+void link_tr_set(const char *me, const char *them);   // change the translate pair from the watch (sent to the phone)
 void link_tr_state(char *me, char *them, char *src, size_t srcn, char *dst, size_t dstn, int *gen);   // gen increments per new result
 
 // ---- self-test hook ----

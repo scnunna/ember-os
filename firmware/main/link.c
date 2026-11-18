@@ -363,6 +363,17 @@ void link_tr_state(char *me, char *them, char *src, size_t srcn, char *dst, size
     if (gen) *gen = s_tr.gen;
 }
 
+// the watch changes the languages itself (Translate gear / swap): show it at once, tell the phone (it saves + echoes)
+void link_tr_set(const char *me, const char *them)
+{
+    snprintf(s_tr.me, sizeof(s_tr.me), "%s", me); snprintf(s_tr.them, sizeof(s_tr.them), "%s", them);
+    s_tr.src[0] = s_tr.dst[0] = 0;
+    s_tr.gen++;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "t", "tr_cfg"); cJSON_AddStringToObject(o, "me", me); cJSON_AddStringToObject(o, "them", them);
+    send_obj(o);
+}
+
 // ------------------------------------------------------------------ push-to-talk audio (mic -> ADPCM -> AUDIO)
 static volatile bool s_ptt, s_ptt_task;
 static char s_ptt_side[8] = "me";

@@ -23,6 +23,10 @@ void launcher_home(void);        // app grid
 void launcher_face(void);        // watch face
 void launcher_back(void);        // one level up (app -> grid -> face)
 void launcher_wake(void);
+void launcher_greet(const char *big, const char *small, int ms, bool off_after);   // 2 s full-screen greeting (lock held)
+void launcher_greet_by_time(void);
+void app_amber_button(void);          // BOOT click inside Amber: toggle spoken replies (display lock held)
+bool launcher_greeting_active(void);
 void launcher_event(void);       // an event happened: keeps a lit screen on; never lights a dark one (pref evwake)        // light the screen / reset idle timer
 void launcher_synth(bool active, bool pressed, int x, int y);   // test hook: fake finger
 int  launcher_state(void);       // 0 face, 1 grid, 2 app
@@ -40,7 +44,8 @@ uint32_t launcher_raise_wakes(void);   // screen wake-ups caused by raising the 
 // ---- power manager (power.c) ----
 typedef struct { int64_t ms_active, ms_doze; uint32_t wakes, deep_count; bool sleep_allowed, screen_on; } power_stats_t;
 void power_init(void);
-void power_force_battery(bool on);   // test: sleep policy as if on battery (USB shell lpforce)
+void power_force_battery(int minutes);   // test: sleep policy as if on battery, for N minutes (USB shell lpforce)
+const char *power_sleep_block(void);     // "ok" or why light sleep is blocked (usb, recording, wifi, setting_off)
 void power_start(void);
 void power_update(bool screen_on);
 bool power_sleep_allowed(void);

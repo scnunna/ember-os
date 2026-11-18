@@ -212,6 +212,10 @@ object AppGraph {
             is Message.Hello, is Message.Ci -> link.lifeTick()
             is Message.SayReady, is Message.SaySkip, is Message.SayDone, is Message.SayStop -> speak.onMessage(m)
             is Message.Ptt -> pttLive.value = if (m.on) m.side else null
+            // the watch changed the translate languages (gear / swap on the watch): save them, echo back as confirmation
+            is Message.TrCfg -> if (m.me in Languages.codes && m.them in Languages.codes) {
+                prefs.setLanguages(m.me, m.them); link.send(Message.TrCfg(m.me, m.them))
+            }
             else -> {}
         }
     }

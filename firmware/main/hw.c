@@ -108,7 +108,8 @@ int hw_pwrkey_short(void)
     if (!s_axp || rr(s_axp, 0x49, &st, 1) != ESP_OK) return -1;
     if (!(st & 0x0C)) return 0;
     wr1(s_axp, 0x49, st & 0x0C);                // write-1-to-clear
-    return (st & 0x08) ? 1 : 0;                 // bit 3 short press (bit 2 = long press, handled by the PMU)
+    if (st & 0x04) return 2;                    // bit 2: held past IRQLEVEL (~1 s); the PMU itself powers off at 6 s
+    return (st & 0x08) ? 1 : 0;                 // bit 3: short press
 }
 
 void hw_pmu_regs(uint8_t out[4])               // 0x22, 0x27, 0x41, 0x49 (USB shell "pmu")

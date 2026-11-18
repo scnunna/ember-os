@@ -13,6 +13,8 @@
 #include "esp_timer.h"
 #include "app.h"
 #include "diag.h"
+#include "bsp/esp-bsp.h"
+#include "hw.h"
 
 static TaskHandle_t s_task;
 
@@ -57,14 +59,19 @@ static void pwr_task(void *arg)
 {
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(200));
-        if (hw_pwrkey_short() == 1) { printf("BTN power click\n"); launcher_btn_long(); }   // screen on/off
+        int k = hw_pwrkey_short();
+        if (k == 1) { printf("BTN power click\n"); diag_event("BTN power click"); launcher_btn_long(); }   // screen on/off
+        else if (k == 2) {                       // held ~1 s: the PMU switches off at 6 s -> say good-bye, save state
+            diag_event("BTN power hold (switching off)");
+            hw_steps_save(); diag_flush();
+            bsp_display_lock(0); launcher_greet("Good bye", "Switching off...", 5000, true); bsp_display_unlock();
+        }
     }
 }
 
 void buttons_start(void)
 {
-    // stack in PSRAM: this task never writes flash (internal RAM is what the Wi-Fi hotspot needs)
-    xTaskCreateWithCaps(pwr_task, "pwrkey", 3072, NULL, 4, NULL, MALLOC_CAP_SPIRAM);
+    xTaskCreate(pwr_task, "pwrkey", 3072, NULL, 4, NULL);   // internal stack: the switch-off path writes flash (steps, log)
     gpio_config_t io = {.pin_bit_mask = 1ULL << 0, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE};
     gpio_config(&io);
     xTaskCreate(btn_task, "btn", 4096, NULL, 4, &s_task);

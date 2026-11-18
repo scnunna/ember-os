@@ -54,13 +54,24 @@ static void panel_cmd(uint8_t cmd)
 }
 
 // ---- policy ----
-static volatile bool s_force_batt;              // USB shell "lpforce 1": behave as on battery while plugged (diagnosis)
-void power_force_battery(bool on) { s_force_batt = on; }
+// USB shell "lpforce <minutes>": behave as on battery while plugged, for that long only (the USB console is gone
+// while the chip light-sleeps, so it must come back by itself: 2026-11-17 it stayed asleep until BOOT was pressed)
+static volatile int64_t s_force_until;
+void power_force_battery(int minutes) { s_force_until = minutes > 0 ? esp_timer_get_time() + (int64_t)minutes * 60000000LL : 0; }
 static bool on_battery(void)
 {
-    if (s_force_batt) return true;
+    if (s_force_until && esp_timer_get_time() < s_force_until) return true;
     batt_t b; hw_batt(&b);
     return b.present && !b.vbus;
+}
+// why light sleep is not allowed right now ("ok" = allowed): logged in every diag snapshot
+const char *power_sleep_block(void)
+{
+    if (!hw_pref_get("lp", 1)) return "setting_off";
+    if (!on_battery()) return "usb";
+    if (rec_active()) return "recording";
+    if (wifi_ap_active()) return "wifi";
+    return "ok";
 }
 bool power_sleep_allowed(void)
 {
